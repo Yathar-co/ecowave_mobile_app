@@ -663,4 +663,5 @@ def handle_message(data):
         app.logger.error(f"Error in chat email notification: {e}")
 
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=PORT, debug=True)
+    # Python 3.13 + eventlet is unstable. Using standard Flask runner.
+    app.run(host="0.0.0.0", port=PORT, debug=True)

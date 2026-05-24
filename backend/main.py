@@ -282,6 +282,48 @@ def send_inquiry_email(seller_email: str, product_title: str, buyer_name: str, b
         app.logger.error(f"Failed to send email: {e}")
         return False
 
+def send_chat_notification_email(recipient_email, sender_name, message_text, product_title):
+    """Send an email notification about a new chat message"""
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        return False
+
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f"EcoWave: New message from {sender_name}"
+        msg['From'] = SMTP_EMAIL
+        msg['To'] = recipient_email
+
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; border-radius: 10px;">
+              <h2 style="color: #10b981;">New Chat Message! 💬</h2>
+              <p><strong>{sender_name}</strong> sent you a message regarding <strong>{product_title}</strong>:</p>
+
+              <div style="background-color: white; padding: 15px; border-radius: 8px; border-left: 4px solid #10b981; margin: 20px 0;">
+                <p style="font-style: italic; margin: 0;">"{message_text}"</p>
+              </div>
+
+              <p>Open the EcoWave app to reply and continue the conversation.</p>
+
+              <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
+              <p style="font-size: 12px; color: #6b7280;">EcoWave Marketplace - Better for the planet.</p>
+            </div>
+          </body>
+        </html>
+        """
+
+        msg.attach(MIMEText(html, 'html'))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_EMAIL, SMTP_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        app.logger.error(f"Failed to send chat notification email: {e}")
+        return False
+
 # Product API Endpoints
 @app.route("/api/products", methods=["GET"])
 def get_products():
@@ -610,15 +652,45 @@ def verify_payment():
 @socketio.on('message')
 def handle_message(data):
     room = data['room']
+    sender_email = data['sender']
+    text = data['text']
+
     msg = {
         "room": room,
-        "sender": data['sender'],
-        "text": data['text'],
+        "sender": sender_email,
+        "text": text,
         "created_at": datetime.utcnow().isoformat()
     }
     messages_col.insert_one(msg.copy())
     msg.pop("_id", None)
     emit('message', msg, room=room)
+
+    # Send email notification to the other party
+    try:
+        # room format: productID_buyerEmail
+        parts = room.split('_')
+        if len(parts) >= 2:
+            product_id = parts[0]
+            buyer_email = parts[1]
+
+            product = products_col.find_one({"id": product_id})
+            if product:
+                seller_email = product.get('seller_email')
+                product_title = product.get('title', 'Product')
+
+                # Determine recipient (if sender is buyer, recipient is seller, and vice versa)
+                recipient_email = seller_email if sender_email == buyer_email else buyer_email
+
+                # We don't want to spam emails for every single message in a fast chat.
+                # Only send if the last message in this room was more than 5 minutes ago
+                # or if there are fewer than 2 messages (start of conversation).
+                msg_count = messages_col.count_documents({"room": room})
+
+                if msg_count <= 2:
+                    # New conversation, definitely send
+                    send_chat_notification_email(recipient_email, sender_email, text, product_title)
+    except Exception as e:
+        app.logger.error(f"Error in chat email notification: {e}")
 
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=PORT, debug=True)

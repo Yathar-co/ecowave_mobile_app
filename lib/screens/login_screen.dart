@@ -56,16 +56,34 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (e) {
       if (mounted) {
         String errorMsg = e.toString();
+        // If it's a Dio error, try to extract more specific info
         if (errorMsg.contains('connection timeout')) {
-          errorMsg = 'Server is waking up. Please try again in a few seconds.';
+          errorMsg = 'Server is taking too long to wake up (Render Cold Start). Please wait 30s and try again.';
         } else if (errorMsg.contains('connection error')) {
-          errorMsg = 'No internet or server unreachable. Check your connection.';
+          errorMsg = 'Cannot reach server. Please check your internet or VPN.';
+        } else if (errorMsg.contains('401')) {
+          errorMsg = 'Invalid credentials. Please check your email/name.';
         }
+        
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(errorMsg),
+            content: Text('Error: $errorMsg'),
             backgroundColor: ecoError,
-            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 8),
+            action: SnackBarAction(
+              label: 'Details',
+              textColor: Colors.white,
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Technical Details'),
+                    content: SingleChildScrollView(child: Text(e.toString())),
+                    actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+                  ),
+                );
+              },
+            ),
           ),
         );
       }
@@ -307,16 +325,34 @@ class _RegisterScreenState extends State<RegisterScreen> {
     } catch (e) {
       if (mounted) {
         String errorMsg = e.toString();
+        // If it's a Dio error, try to extract more specific info
         if (errorMsg.contains('connection timeout')) {
-          errorMsg = 'Server is waking up. Please try again in a few seconds.';
+          errorMsg = 'Server is taking too long to wake up (Render Cold Start). Please wait 30s and try again.';
         } else if (errorMsg.contains('connection error')) {
-          errorMsg = 'No internet or server unreachable. Check your connection.';
+          errorMsg = 'Cannot reach server. Please check your internet or VPN.';
+        } else if (errorMsg.contains('401')) {
+          errorMsg = 'Invalid credentials. Please check your email/name.';
         }
+        
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(errorMsg),
+            content: Text('Error: $errorMsg'),
             backgroundColor: ecoError,
-            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 8),
+            action: SnackBarAction(
+              label: 'Details',
+              textColor: Colors.white,
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Technical Details'),
+                    content: SingleChildScrollView(child: Text(e.toString())),
+                    actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+                  ),
+                );
+              },
+            ),
           ),
         );
       }

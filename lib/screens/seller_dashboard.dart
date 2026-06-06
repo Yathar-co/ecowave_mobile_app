@@ -147,13 +147,30 @@ class _SellerDashboardState extends State<SellerDashboard> {
                 ),
               ),
               ElevatedButton(
-                onPressed: () => profile.markAsShipped(item.txnId!),
+                onPressed: profile.isLoading 
+                  ? null 
+                  : () async {
+                      await profile.markAsShipped(item.txnId!);
+                      if (mounted) {
+                        if (profile.error != null) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(profile.error!), backgroundColor: ecoError),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Item marked as shipped!'), backgroundColor: ecoGreen),
+                          );
+                        }
+                      }
+                    },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: ecoGreen,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   minimumSize: const Size(0, 32),
                 ),
-                child: const Text('Mark Shipped', style: TextStyle(fontSize: 12, color: Colors.white)),
+                child: profile.isLoading 
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Mark Shipped', style: TextStyle(fontSize: 12, color: Colors.white)),
               ),
             ],
           ),

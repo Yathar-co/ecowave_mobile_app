@@ -129,23 +129,28 @@ def token_required(f):
             return jsonify({'message': 'Authentication required. Please log in.'}), 401
             
         try:
-            data = jwt.decode(token, app.secret_key, algorithms=["HS256"])
+            # Ensure the secret key is a string for the decode function
+            secret = app.secret_key
+            if isinstance(secret, bytes):
+                secret = secret.decode('utf-8')
+
+            data = jwt.decode(token, secret, algorithms=["HS256"])
             email = data.get('email')
             if not email:
-                app.logger.warning(f"Auth failed: No email in token for {request.path}")
-                return jsonify({'message': 'Invalid session token.'}), 401
+                return jsonify({'message': 'Invalid session token (no email).'}), 401
 
             current_user = users_col.find_one({"email": email})
             if not current_user:
-                app.logger.warning(f"Auth failed: User not found for email {email}")
                 return jsonify({'message': 'User account not found.'}), 401
 
             return f(current_user, *args, **kwargs)
         except jwt.ExpiredSignatureError:
             return jsonify({'message': 'Token has expired!'}), 401
         except Exception as e:
-            app.logger.warning(f"Auth failed: Token error on {request.path}: {str(e)}")
-            return jsonify({'message': 'Token is invalid!', 'error': str(e)}), 401
+            # Safely convert error to string to avoid serialization issues
+            error_str = str(e)
+            app.logger.warning(f"Auth failed on {request.path}: {error_str}")
+            return jsonify({'message': 'Token is invalid!', 'error': error_str}), 401
 
     return decorated
 
@@ -397,14 +402,23 @@ def admin_get_users(current_user):
 
     all_users = list(users_col.find({}, {"_id": 0}))
 
-    # Ensure all users have required fields for the UI to prevent rendering errors
+    # Ensure all users have required fields and are JSON serializable
+    cleaned_users = []
     for u in all_users:
-        u['is_banned'] = u.get('is_banned', False)
-        u['report_count'] = u.get('report_count', 0)
-        u['is_verified'] = u.get('is_verified', False)
-        u['name'] = u.get('name', u.get('username', 'User'))
+        user_data = {
+            'email': str(u.get('email', '')),
+            'name': str(u.get('name', u.get('username', 'User'))),
+            'is_banned': bool(u.get('is_banned', False)),
+            'report_count': int(u.get('report_count', 0)),
+            'is_verified': bool(u.get('is_verified', False)),
+            'phone': str(u.get('phone', '')),
+            'rating': float(u.get('rating', 0.0)),
+            'sales_count': int(u.get('sales_count', 0)),
+            'created_at': str(u.get('created_at', ''))
+        }
+        cleaned_users.append(user_data)
 
-    return jsonify({"success": True, "users": all_users}), 200
+    return jsonify({"success": True, "users": cleaned_users}), 200
 
 @app.route("/api/admin/users/<email>/ban", methods=["POST"])
 @token_required
@@ -1248,13 +1262,20 @@ def mark_as_shipped(current_user):
         data = request.get_json()
         txn_id = data.get("txn_id")
 
+        if not txn_id:
+            return jsonify({"success": False, "error": "txn_id is required"}), 400
+
         txn = transactions_col.find_one({"txn_id": txn_id, "seller_email": current_user['email']})
         if not txn:
-            return jsonify({"success": False, "error": "Transaction not found or unauthorized"}), 404
+            # Try finding by product if txn_id was actually a product_id (common mistake)
+            txn = transactions_col.find_one({"product_id": txn_id, "seller_email": current_user['email']})
+            if not txn:
+                return jsonify({"success": False, "error": "Transaction not found or unauthorized"}), 404
+            txn_id = txn["txn_id"]
 
         # Allow shipping if advance is paid
         if txn.get("current_stage") != "shipping":
-            return jsonify({"success": False, "error": "Buyer must pay advance before shipping."}), 400
+            return jsonify({"success": False, "error": f"Current stage is {txn.get('current_stage')}, expected 'shipping'"}), 400
 
         # Update transaction status
         transactions_col.update_one(
@@ -1267,7 +1288,16 @@ def mark_as_shipped(current_user):
             }}
         )
 
+        # IMPORTANT: Also update the product status to reflect it's been shipped
+        products_col.update_one(
+            {"id": txn["product_id"]},
+            {"$set": {"status": "shipped"}}
+        )
+
         return jsonify({"success": True, "message": "Item marked as shipped. Buyer can now pay the shipping stage (20%)."}), 200
+    except Exception as e:
+        app.logger.error(f"Error in mark_as_shipped: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

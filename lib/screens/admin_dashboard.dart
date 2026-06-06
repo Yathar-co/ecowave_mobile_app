@@ -28,15 +28,26 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
     _loadAll();
   }
 
+  String? _errorMessage;
+
   Future<void> _loadAll() async {
     if (!mounted) return;
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
     try {
       await Future.wait([
         _loadReports(),
         _loadProducts(),
         _loadUsers(),
       ]);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _errorMessage = e.toString().contains('403') 
+            ? 'Unauthorized: Admin access only' 
+            : 'Connection Error: Check if backend is running');
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -116,7 +127,19 @@ class _AdminDashboardState extends State<AdminDashboard> with SingleTickerProvid
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: ecoGreen))
-          : TabBarView(
+          : _errorMessage != null
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.error_outline, color: ecoError, size: 48),
+                      const SizedBox(height: 16),
+                      Text(_errorMessage!, style: const TextStyle(color: Colors.white)),
+                      TextButton(onPressed: _loadAll, child: const Text('Retry', style: TextStyle(color: ecoGreen))),
+                    ],
+                  ),
+                )
+              : TabBarView(
               controller: _tabController,
               children: [
                 _buildOverviewTab(),

@@ -31,7 +31,14 @@ class _LoginScreenState extends State<LoginScreen> {
           _emailCtrl.text.trim(),
           _nameCtrl.text.trim(),
         );
-    if (mounted) context.go('/marketplace');
+    if (mounted) {
+      final user = context.read<AuthProvider>().user;
+      if (user?.email == 'admin@ecowave.com') {
+        context.go('/admin');
+      } else {
+        context.go('/marketplace');
+      }
+    }
   }
 
   @override
@@ -146,7 +153,12 @@ class _LoginScreenState extends State<LoginScreen> {
                                   await context.read<AuthProvider>().loginWithGoogle();
                                   if (!context.mounted) return;
                                   if (context.read<AuthProvider>().isLoggedIn) {
-                                    context.go('/marketplace');
+                                    final user = context.read<AuthProvider>().user;
+                                    if (user?.email == 'admin@ecowave.com') {
+                                      context.go('/admin');
+                                    } else {
+                                      context.go('/marketplace');
+                                    }
                                   }
                                 } finally {
                                   if (mounted) setState(() => _loading = false);
@@ -218,7 +230,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
           _emailCtrl.text.trim(),
           _nameCtrl.text.trim(),
         );
-    if (mounted) context.go('/marketplace');
+    if (mounted) {
+      final user = context.read<AuthProvider>().user;
+      if (user?.email == 'admin@ecowave.com') {
+        context.go('/admin');
+      } else {
+        context.go('/marketplace');
+      }
+    }
   }
 
   @override
@@ -330,7 +349,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   await context.read<AuthProvider>().loginWithGoogle();
                                   if (!context.mounted) return;
                                   if (context.read<AuthProvider>().isLoggedIn) {
-                                    context.go('/marketplace');
+                                    final user = context.read<AuthProvider>().user;
+                                    if (user?.email == 'admin@ecowave.com') {
+                                      context.go('/admin');
+                                    } else {
+                                      context.go('/marketplace');
+                                    }
                                   }
                                 } finally {
                                   if (mounted) setState(() => _loading = false);

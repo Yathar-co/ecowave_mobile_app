@@ -75,6 +75,7 @@ class _SellScreenState extends State<SellScreen> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error getting location: $e')),
       );
@@ -84,8 +85,23 @@ class _SellScreenState extends State<SellScreen> {
   }
 
   Future<void> _submit() async {
-    final user = context.read<AuthProvider>().user;
-    if (!_hasImage || _titleCtrl.text.isEmpty || _priceCtrl.text.isEmpty) return;
+    final auth = context.read<AuthProvider>();
+    final user = auth.user;
+    
+    if (!auth.isLoggedIn) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Please log in to list a product')),
+      );
+      return;
+    }
+
+    if (!_hasImage || _titleCtrl.text.isEmpty || _priceCtrl.text.isEmpty || _category.isEmpty || _material.isEmpty || _condition.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Please fill in all required fields (Category, Material, Condition) and add a photo')),
+      );
+      return;
+    }
 
     await context.read<SellProvider>().listProduct(CreateProductRequest(
       title: _titleCtrl.text.trim(),
@@ -103,6 +119,7 @@ class _SellScreenState extends State<SellScreen> {
 
     if (mounted && context.read<SellProvider>().success) {
       context.read<SellProvider>().reset();
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('🌿 Item listed successfully!'),
@@ -125,8 +142,16 @@ class _SellScreenState extends State<SellScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>();
     final sell = context.watch<SellProvider>();
-    final canSubmit = _hasImage && _titleCtrl.text.isNotEmpty && _priceCtrl.text.isNotEmpty && !sell.isLoading;
+    final canSubmit = auth.isLoggedIn && 
+        _hasImage && 
+        _titleCtrl.text.isNotEmpty && 
+        _priceCtrl.text.isNotEmpty && 
+        _category.isNotEmpty && 
+        _material.isNotEmpty && 
+        _condition.isNotEmpty && 
+        !sell.isLoading;
 
     return Scaffold(
       backgroundColor: ecoDark,

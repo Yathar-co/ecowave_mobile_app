@@ -32,6 +32,8 @@ class Product {
   final String sellerUpiId;
   final String createdAt;
   final String status;
+  final String? txnId;
+  final String? buyerEmail;
 
   const Product({
     this.id = '',
@@ -51,6 +53,8 @@ class Product {
     this.sellerUpiId = '',
     this.createdAt = '',
     this.status = 'active',
+    this.txnId,
+    this.buyerEmail,
   });
 
   factory Product.fromJson(Map<String, dynamic> j) => Product(
@@ -63,7 +67,7 @@ class Product {
         category: j['category'] as String? ?? '',
         material: j['material'] as String? ?? '',
         ecoImpact: j['eco_impact'] != null
-            ? EcoImpact.fromJson(j['eco_impact'] as Map<String, dynamic>)
+            ? EcoImpact.fromJson(Map<String, dynamic>.from(j['eco_impact'] as Map))
             : null,
         sellerId: j['seller_id'] as String? ?? '',
         sellerEmail: j['seller_email'] as String? ?? '',
@@ -78,6 +82,8 @@ class Product {
         sellerUpiId: j['seller_upi_id'] as String? ?? '',
         createdAt: j['created_at'] as String? ?? '',
         status: j['status'] as String? ?? 'active',
+        txnId: j['txn_id'] as String?,
+        buyerEmail: j['buyer_email'] as String?,
       );
 }
 
@@ -109,20 +115,93 @@ class User {
   final String email;
   final String name;
   final String token;
+  final String phone;
+  final bool isVerified;
+  final bool isTrustedSeller;
+  final double rating;
+  final int salesCount;
+  final String createdAt;
+  final bool isBanned;
+  final String? banReason;
+  final int reportCount;
 
-  const User({this.email = '', this.name = '', this.token = ''});
+  const User({
+    this.email = '',
+    this.name = '',
+    this.token = '',
+    this.phone = '',
+    this.isVerified = false,
+    this.isTrustedSeller = false,
+    this.rating = 0.0,
+    this.salesCount = 0,
+    this.createdAt = '',
+    this.isBanned = false,
+    this.banReason,
+    this.reportCount = 0,
+  });
 
   factory User.fromJson(Map<String, dynamic> j) => User(
         email: j['email'] as String? ?? '',
         name: j['name'] as String? ?? '',
         token: j['token'] as String? ?? '',
+        phone: j['phone'] as String? ?? '',
+        isVerified: j['is_verified'] as bool? ?? false,
+        isTrustedSeller: j['is_trusted_seller'] as bool? ?? false,
+        rating: (j['rating'] as num?)?.toDouble() ?? 0.0,
+        salesCount: j['sales_count'] as int? ?? 0,
+        createdAt: j['created_at'] as String? ?? '',
+        isBanned: j['is_banned'] as bool? ?? false,
+        banReason: j['ban_reason'] as String?,
+        reportCount: j['report_count'] as int? ?? 0,
       );
 
   Map<String, dynamic> toJson() => {
         'email': email,
         'name': name,
         'token': token,
+        'phone': phone,
+        'is_verified': isVerified,
+        'is_trusted_seller': isTrustedSeller,
+        'rating': rating,
+        'sales_count': salesCount,
+        'created_at': createdAt,
+        'is_banned': isBanned,
+        'ban_reason': banReason,
+        'report_count': reportCount,
       };
+}
+
+class Review {
+  final String id;
+  final String productId;
+  final String reviewerName;
+  final String reviewerEmail;
+  final String comment;
+  final double rating;
+  final List<String> images;
+  final String createdAt;
+
+  const Review({
+    required this.id,
+    required this.productId,
+    required this.reviewerName,
+    required this.reviewerEmail,
+    required this.comment,
+    required this.rating,
+    this.images = const [],
+    required this.createdAt,
+  });
+
+  factory Review.fromJson(Map<String, dynamic> j) => Review(
+        id: j['id'] as String? ?? '',
+        productId: j['product_id'] as String? ?? '',
+        reviewerName: j['reviewer_name'] as String? ?? '',
+        reviewerEmail: j['reviewer_email'] as String? ?? '',
+        comment: j['comment'] as String? ?? '',
+        rating: (j['rating'] as num?)?.toDouble() ?? 0.0,
+        images: (j['images'] as List<dynamic>?)?.map((e) => e as String).toList() ?? [],
+        createdAt: j['created_at'] as String? ?? '',
+      );
 }
 
 class InquiryRequest {

@@ -18,7 +18,33 @@ class AuthProvider extends ChangeNotifier {
     if (raw != null) {
       _user = User.fromJson(jsonDecode(raw) as Map<String, dynamic>);
       _api.setToken(_user?.token);
+      // Refresh user data from backend to get latest stats/badges
+      refreshProfile();
     }
+  }
+
+  Future<void> refreshProfile() async {
+    if (_user == null) return;
+    try {
+      final updated = await _api.getUserProfile(_user!.email);
+      // Preserve the token from existing user object
+      _user = User(
+        email: updated.email,
+        name: updated.name,
+        token: _user!.token,
+        phone: updated.phone,
+        isVerified: updated.isVerified,
+        isTrustedSeller: updated.isTrustedSeller,
+        rating: updated.rating,
+        salesCount: updated.salesCount,
+        createdAt: updated.createdAt,
+        isBanned: updated.isBanned,
+        banReason: updated.banReason,
+        reportCount: updated.reportCount,
+      );
+      await _persist();
+      notifyListeners();
+    } catch (_) {}
   }
 
   /// Simple email/name login — calls backend to get token
@@ -26,12 +52,14 @@ class AuthProvider extends ChangeNotifier {
     try {
       _user = await _api.login(email, name);
       _api.setToken(_user?.token);
+      if (kDebugMode) print("Login successful. Token: ${_user?.token?.substring(0, 10)}...");
       await _persist();
-    } catch (_) {
-      // Fallback or ignore for prototyping
-      _user = User(email: email, name: name, token: '');
+    } catch (e) {
+      if (kDebugMode) print("Login failed: $e");
+      // Don't set a dummy user with no token, let it stay null so the UI knows to login
+      _user = null;
       _api.setToken(null);
-      await _persist();
+      rethrow;
     }
     notifyListeners();
   }

@@ -63,9 +63,14 @@ products_col = db['products']
 inquiries_col = db['inquiries']
 messages_col = db['messages']
 transactions_col = db['transactions']
+reports_col = db['reports']
 products_col.create_index([("created_at", ASCENDING)])
 inquiries_col.create_index([("created_at", ASCENDING)])
 messages_col.create_index([("room", ASCENDING), ("created_at", ASCENDING)])
+reports_col.create_index([("target_id", ASCENDING)])
+reviews_col = db['reviews']
+reviews_col.create_index([("product_id", ASCENDING)])
+reviews_col.create_index([("seller_email", ASCENDING)])
 
 # Impact Metrics Constants
 IMPACT_METRICS = {
@@ -77,9 +82,28 @@ IMPACT_METRICS = {
     "other": {"co2": 10.0, "water": 30.0, "waste": 1.0}
 }
 
+# Material Multipliers (adjusts impact based on sustainability)
+MATERIAL_MULTIPLIERS = {
+    "cotton": 0.8,      # Natural, slightly better than synthetic
+    "polyester": 1.2,   # Synthetic, higher impact
+    "wood": 0.5,        # Renewable
+    "metal": 1.5,       # High energy to produce/recycle
+    "plastic": 1.3,     # High waste impact
+    "glass": 0.7,       # Highly recyclable
+    "other": 1.0
+}
+
 def calculate_impact(category, material=None):
     """Calculate eco impact based on category and material"""
-    base = IMPACT_METRICS.get(category.lower(), IMPACT_METRICS["other"])
+    base = IMPACT_METRICS.get(category.lower(), IMPACT_METRICS["other"]).copy()
+
+    # Apply material multiplier if available
+    if material:
+        multiplier = MATERIAL_MULTIPLIERS.get(material.lower(), 1.0)
+        base["co2"] *= multiplier
+        base["water"] *= multiplier
+        base["waste"] *= multiplier
+
     return base
 
 def token_required(f):
@@ -90,23 +114,39 @@ def token_required(f):
         
         if auth_header:
             try:
-                token = auth_header.split(" ")[1]
-            except IndexError:
-                return jsonify({'message': 'Token is missing!'}), 401
+                # Expecting "Bearer <token>"
+                parts = auth_header.split(" ")
+                if len(parts) == 2 and parts[0].lower() == 'bearer':
+                    token = parts[1]
+                else:
+                    # Fallback for simple token strings or malformed Bearer
+                    token = parts[-1]
+            except Exception:
+                return jsonify({'message': 'Authorization header format is invalid!'}), 401
         
         if not token:
-            return jsonify({'message': 'Token is missing!'}), 401
+            app.logger.warning(f"Auth failed: Token missing for {request.path}")
+            return jsonify({'message': 'Authentication required. Please log in.'}), 401
             
         try:
             data = jwt.decode(token, app.secret_key, algorithms=["HS256"])
-            current_user = users_col.find_one({"email": data['email']})
+            email = data.get('email')
+            if not email:
+                app.logger.warning(f"Auth failed: No email in token for {request.path}")
+                return jsonify({'message': 'Invalid session token.'}), 401
+
+            current_user = users_col.find_one({"email": email})
             if not current_user:
-                return jsonify({'message': 'User not found!'}), 401
+                app.logger.warning(f"Auth failed: User not found for email {email}")
+                return jsonify({'message': 'User account not found.'}), 401
+
+            return f(current_user, *args, **kwargs)
+        except jwt.ExpiredSignatureError:
+            return jsonify({'message': 'Token has expired!'}), 401
         except Exception as e:
+            app.logger.warning(f"Auth failed: Token error on {request.path}: {str(e)}")
             return jsonify({'message': 'Token is invalid!', 'error': str(e)}), 401
-            
-        return f(current_user, *args, **kwargs)
-    
+
     return decorated
 
 oauth = OAuth(app)
@@ -172,22 +212,227 @@ def upsert_oauth_user(email: str, name: str = None, provider: str = "google", ex
             "created_at": now,
             "balance": 100000.0,
             "portfolio": [],
-            "tradeHistory": []
+            "tradeHistory": [],
+            "phone": "",
+            "is_verified": email == "admin@ecowave.com",
+            "is_trusted_seller": email == "admin@ecowave.com",
+            "rating": 5.0,
+            "sales_count": 0,
+            "is_banned": False,
+            "report_count": 0,
+            "ban_reason": None,
+            "cancellation_rate": 0.0,
         }
-
     }
-    users_col.update_one(query, update, upsert=True)
-    user = users_col.find_one(query)
+    # Atomic operation for faster performance
+    user = users_col.find_one_and_update(
+        query,
+        update,
+        upsert=True,
+        return_document=True
+    )
     if user:
         user["user_id"] = user.get("username")
         user.pop("_id", None)
     return user
 
-@app.route("/auth/google", methods=["GET"])
+@app.route("/api/auth/google", methods=["GET"])
 def auth_google():
     redirect_uri = url_for("auth_google_callback", _external=True)
     app.logger.info("auth_google redirect_uri: %s", redirect_uri)
     return google.authorize_redirect(redirect_uri)
+
+@app.route("/api/reports", methods=["POST"])
+@token_required
+def submit_report(current_user):
+    """Submit a report for a user or product"""
+    try:
+        data = request.get_json()
+        target_id = data.get("target_id") # can be product_id or user_email
+        target_type = data.get("target_type") # 'product' or 'user'
+        reason = data.get("reason") # 'scam', 'fake', 'spam', etc.
+        description = data.get("description", "")
+
+        if not target_id or not target_type or not reason:
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
+
+        # Enforce: Only buyers can report sellers or products
+        if target_type in ['user', 'product']:
+            # Check if current_user has any transaction with this target (seller or specific product)
+            query = {
+                "buyer_email": current_user['email']
+            }
+            if target_type == 'user':
+                query["seller_email"] = target_id
+            else:
+                query["product_id"] = target_id
+
+            has_transaction = transactions_col.find_one(query)
+            if not has_transaction:
+                return jsonify({"success": False, "error": "You can only report a seller or product after initiating a purchase."}), 403
+
+        # Prevent self-reporting
+        if target_type == 'user' and target_id == current_user['email']:
+            return jsonify({"success": False, "error": "You cannot report yourself"}), 400
+
+        report = {
+            "report_id": str(uuid.uuid4()),
+            "reporter_email": current_user['email'],
+            "target_id": target_id,
+            "target_type": target_type,
+            "reason": reason,
+            "description": description,
+            "status": "pending", # pending, validated, dismissed
+            "created_at": datetime.utcnow()
+        }
+
+        reports_col.insert_one(report)
+        return jsonify({"success": True, "message": "Report submitted for review"}), 201
+    except Exception as e:
+        app.logger.error(f"Error submitting report: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/admin/reports", methods=["GET"])
+def get_all_reports():
+    """Admin: Get all pending reports"""
+    try:
+        reports = list(reports_col.find({"status": "pending"}, {"_id": 0}).sort("created_at", -1))
+        return jsonify({"success": True, "reports": reports}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/admin/dismiss-report/<report_id>", methods=["POST"])
+def dismiss_report(report_id):
+    """Admin: Dismiss a report"""
+    try:
+        reports_col.update_one({"report_id": report_id}, {"$set": {"status": "dismissed"}})
+        return jsonify({"success": True, "message": "Report dismissed"}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/admin/validate-report/<report_id>", methods=["POST"])
+def validate_report(report_id):
+    """Admin validates a report and applies punishment if necessary"""
+    try:
+        report = reports_col.find_one({"report_id": report_id})
+        if not report:
+            return jsonify({"success": False, "error": "Report not found"}), 404
+
+        if report['status'] != 'pending':
+            return jsonify({"success": False, "error": "Report already processed"}), 400
+
+        reports_col.update_one({"report_id": report_id}, {"$set": {"status": "validated"}})
+
+        target_email = None
+        if report['target_type'] == 'user':
+            target_email = report['target_id']
+        elif report['target_type'] == 'product':
+            product = products_col.find_one({"id": report['target_id']})
+            if product:
+                target_email = product.get('seller_email')
+                # Optional: deactivate reported product
+                products_col.update_one({"id": report['target_id']}, {"$set": {"status": "under_review"}})
+
+        if target_email:
+            user = users_col.find_one_and_update(
+                {"email": target_email},
+                {"$inc": {"report_count": 1}},
+                return_document=True
+            )
+
+            report_count = user.get('report_count', 0)
+            if report_count >= 15:
+                users_col.update_one({"email": target_email}, {"$set": {"is_banned": True, "ban_reason": "Multiple community violations"}})
+            elif report_count % 5 == 0:
+                users_col.update_one({"email": target_email}, {"$set": {"is_banned": True, "ban_reason": f"Temporary suspension due to {report_count} validated reports"}})
+
+        return jsonify({"success": True, "message": "Report validated"}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/users/<email>", methods=["GET"])
+def get_user_profile(email):
+    """Get public profile of a user"""
+    try:
+        user = users_col.find_one({"email": email}, {"_id": 0, "token": 0, "balance": 0, "portfolio": 0, "tradeHistory": 0})
+        if not user:
+            return jsonify({"success": False, "error": "User not found"}), 404
+        return jsonify({"success": True, "user": user}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# --- Admin Extension Endpoints ---
+
+@app.route("/api/admin/products", methods=["GET"])
+@token_required
+def admin_get_products(current_user):
+    if current_user['email'] != "admin@ecowave.com":
+        return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+    products = list(products_col.find({}, {"_id": 0}))
+    # Add sales info for each product
+    for p in products:
+        p['is_sold'] = p.get('status') == 'sold'
+        # Total revenue if we track multiple sales, but here it's 1-to-1
+    return jsonify({"success": True, "products": products}), 200
+
+@app.route("/api/admin/products/<product_id>/status", methods=["POST"])
+@token_required
+def admin_update_product_status(current_user, product_id):
+    if current_user['email'] != "admin@ecowave.com":
+        return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+    data = request.get_json()
+    new_status = data.get("status") # 'active', 'banned', 'under_review'
+
+    products_col.update_one({"id": product_id}, {"$set": {"status": new_status}})
+    return jsonify({"success": True, "message": f"Product status updated to {new_status}"}), 200
+
+@app.route("/api/admin/users", methods=["GET"])
+@token_required
+def admin_get_users(current_user):
+    if current_user['email'] != "admin@ecowave.com":
+        return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+    all_users = list(users_col.find({}, {"_id": 0}))
+
+    # Ensure all users have required fields for the UI to prevent rendering errors
+    for u in all_users:
+        u['is_banned'] = u.get('is_banned', False)
+        u['report_count'] = u.get('report_count', 0)
+        u['is_verified'] = u.get('is_verified', False)
+        u['name'] = u.get('name', u.get('username', 'User'))
+
+    return jsonify({"success": True, "users": all_users}), 200
+
+@app.route("/api/admin/users/<email>/ban", methods=["POST"])
+@token_required
+def admin_ban_user(current_user, email):
+    if current_user['email'] != "admin@ecowave.com":
+        return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+    data = request.get_json()
+    is_banned = data.get("is_banned", True)
+    reason = data.get("reason", "Violated terms")
+
+    users_col.update_one({"email": email}, {"$set": {
+        "is_banned": is_banned,
+        "ban_reason": reason if is_banned else None
+    }})
+    return jsonify({"success": True, "message": f"User {'banned' if is_banned else 'unbanned'}"}), 200
+
+@app.route("/api/admin/users/<email>/verify", methods=["POST"])
+@token_required
+def admin_verify_user(current_user, email):
+    if current_user['email'] != "admin@ecowave.com":
+        return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+    data = request.get_json()
+    is_verified = data.get("is_verified", True)
+
+    users_col.update_one({"email": email}, {"$set": {"is_verified": is_verified}})
+    return jsonify({"success": True, "message": f"User {'verified' if is_verified else 'unverified'}"}), 200
 
 @app.route("/auth/google/callback", methods=["GET"])
 def auth_google_callback():
@@ -359,19 +604,39 @@ def get_product(product_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/products", methods=["POST"])
-def create_product():
-    """Create a new product listing"""
+@token_required
+def create_product(current_user):
+    """Create a new product listing with anti-scam checks"""
     try:
+        if current_user.get('is_banned'):
+            return jsonify({"success": False, "error": f"Your account is suspended: {current_user.get('ban_reason')}"}), 403
+
         data = request.get_json()
         
+        # 1. Posting limits for new accounts
+        now = datetime.utcnow()
+        account_age = (now - current_user.get("created_at", now)).days
+        if account_age < 1:
+            # New accounts (less than 24h) can only post 2 items
+            existing_count = products_col.count_documents({"seller_email": current_user['email']})
+            if existing_count >= 2:
+                return jsonify({"success": False, "error": "New accounts are limited to 2 listings in the first 24 hours to prevent spam."}), 400
+
+        # 2. Duplicate listing detection (simple title/description check)
+        duplicate = products_col.find_one({
+            "seller_email": current_user['email'],
+            "title": data['title'],
+            "status": "active"
+        })
+        if duplicate:
+            return jsonify({"success": False, "error": "You already have an active listing with this title."}), 400
+
         # Validate required fields
         required_fields = ["title", "description", "price", "badge", "image"]
         for field in required_fields:
             if field not in data:
                 return jsonify({"success": False, "error": f"Missing field: {field}"}), 400
         
-        # Generate unique ID
-        import uuid
         product_id = str(uuid.uuid4())
         
         product = {
@@ -384,18 +649,18 @@ def create_product():
             "category": data.get("category"),
             "material": data.get("material", ""),
             "eco_impact": calculate_impact(data.get("category", "other"), data.get("material")),
-            "seller_id": data.get("seller_id", "anonymous"),
-            "seller_email": data.get("seller_email", ""),
+            "seller_id": current_user.get("name", "anonymous"),
+            "seller_email": current_user['email'],
             "seller_location": data.get("seller_location", ""),
-            "location": data.get("location"), # {lat: float, lng: float}
-            "seller_phone": data.get("seller_phone", ""),
+            "location": data.get("location"),
+            "seller_phone": current_user.get("phone", ""),
             "seller_upi_id": data.get("seller_upi_id", ""),
             "created_at": datetime.utcnow(),
             "status": "active"
         }
         
         products_col.insert_one(product)
-        product.pop("_id", None)  # Remove MongoDB _id from response
+        product.pop("_id", None)
         
         return jsonify({"success": True, "product": product}), 201
     except Exception as e:
@@ -459,11 +724,106 @@ def create_inquiry():
         app.logger.error(f"Error creating inquiry: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route("/api/products/purchased", methods=["GET"])
+@token_required
+def get_purchased_products(current_user):
+    """Fetch all products purchased by the logged-in user"""
+    try:
+        # Include both 'sold' and 'reserved' (items currently in the 30/20/50 payment flow)
+        products = list(products_col.find(
+            {"buyer_email": current_user['email'], "status": {"$in": ["sold", "reserved"]}},
+            {"_id": 0}
+        ).sort("created_at", -1))
+
+        # Ensure every product has a txn_id for the bill (fallback for older records)
+        for p in products:
+            if not p.get("txn_id"):
+                txn = transactions_col.find_one({
+                    "product_id": p.get("id"),
+                    "buyer_email": current_user['email'],
+                    "status": "completed"
+                })
+                if txn:
+                    p["txn_id"] = txn["txn_id"]
+                    products_col.update_one({"id": p["id"]}, {"$set": {"txn_id": txn["txn_id"]}})
+
+        return jsonify({"success": True, "products": products}), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching purchased products: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/reviews", methods=["POST"])
+@token_required
+def create_review(current_user):
+    """Submit a review for a seller (restricted to buyers)"""
+    try:
+        data = request.get_json()
+        product_id = data.get("product_id")
+        rating = data.get("rating")
+        comment = data.get("comment", "")
+
+        if not product_id or not rating:
+            return jsonify({"success": False, "error": "Product ID and rating are required"}), 400
+
+        # Verify purchase
+        product = products_col.find_one({"id": product_id, "buyer_email": current_user['email'], "status": "sold"})
+        if not product:
+            return jsonify({"success": False, "error": "You can only review items you have purchased."}), 403
+
+        seller_email = product.get("seller_email")
+
+        # Check if already reviewed
+        existing = reviews_col.find_one({"product_id": product_id, "reviewer_email": current_user['email']})
+        if existing:
+            return jsonify({"success": False, "error": "You have already reviewed this purchase."}), 400
+
+        review = {
+            "id": str(uuid.uuid4()),
+            "product_id": product_id,
+            "product_title": product.get("title"),
+            "seller_email": seller_email,
+            "reviewer_email": current_user['email'],
+            "reviewer_name": current_user.get('name', 'Eco User'),
+            "rating": float(rating),
+            "comment": comment,
+            "created_at": datetime.utcnow()
+        }
+
+        reviews_col.insert_one(review)
+
+        # Update seller's average rating
+        all_reviews = list(reviews_col.find({"seller_email": seller_email}))
+        avg_rating = sum(r['rating'] for r in all_reviews) / len(all_reviews)
+        users_col.update_one({"email": seller_email}, {"$set": {"rating": avg_rating}})
+
+        review.pop("_id", None)
+        return jsonify({"success": True, "review": review}), 201
+    except Exception as e:
+        app.logger.error(f"Error creating review: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/reviews/seller/<email>", methods=["GET"])
+def get_seller_reviews(email):
+    """Get all reviews for a specific seller"""
+    try:
+        reviews = list(reviews_col.find({"seller_email": email}, {"_id": 0}).sort("created_at", -1))
+        return jsonify({"success": True, "reviews": reviews}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route("/api/products/seller/<email>", methods=["GET"])
 def get_products_by_seller(email):
-    """Fetch all products by seller email"""
+    """Fetch all products by seller email with buyer info for reserved/sold items"""
     try:
         products = list(products_col.find({"seller_email": email}, {"_id": 0}).sort("created_at", -1))
+
+        # Enrich with buyer email if transaction exists
+        for p in products:
+            if p.get("status") in ["reserved", "sold"]:
+                txn = transactions_col.find_one({"product_id": p["id"]}, {"_id": 0, "buyer_email": 1})
+                if txn:
+                    p["buyer_email"] = txn.get("buyer_email")
+
         return jsonify({"success": True, "products": products}), 200
     except Exception as e:
         app.logger.error(f"Error fetching seller products: {e}")
@@ -506,14 +866,19 @@ def update_product(product_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/products/<product_id>", methods=["DELETE"])
-def delete_product(product_id):
-    """Delete a product"""
+@token_required
+def delete_product(current_user, product_id):
+    """Delete a product listing (only by the owner or admin)"""
     try:
         # Check if product exists
-        product = products_col.find_one({"id": product_id}, {"_id": 0})
+        product = products_col.find_one({"id": product_id})
         if not product:
             return jsonify({"success": False, "error": "Product not found"}), 404
         
+        # Verify ownership
+        if product.get("seller_email") != current_user["email"] and current_user.get("email") != "admin@ecowave.com":
+            return jsonify({"success": False, "error": "Unauthorized to delete this listing"}), 403
+
         # Delete product
         products_col.delete_one({"id": product_id})
         
@@ -541,20 +906,60 @@ def get_user_impact(current_user):
 
 # UPI Payment Endpoints
 @app.route("/api/payments/create-transaction", methods=["POST"])
-def create_transaction():
+@token_required
+def create_transaction(current_user):
     """Record a new UPI transaction when buyer initiates payment"""
     try:
         data = request.get_json()
+        product_id = data.get("product_id", "")
+
+        # Prevent seller from buying their own product
+        product = products_col.find_one({"id": product_id})
+        if not product:
+            return jsonify({"success": False, "error": "Product not found"}), 404
+
+        if product.get("seller_email") == current_user['email']:
+            return jsonify({"success": False, "error": "You cannot purchase your own listing"}), 400
+
         txn_id = f"txn_{str(uuid.uuid4())[:12]}"
         
+        # Security: Use the price from the product record
+        actual_price = float(product.get("price", 0))
+
+        # New Shipping Charge Logic: 3% of item price
+        # 1% goes to seller for shipping aid, 2% to NGO for carbon offset
+        shipping_charge = round(actual_price * 0.03, 2)
+        seller_shipping_aid = round(actual_price * 0.01, 2)
+        ngo_contribution = round(actual_price * 0.02, 2)
+
+        total_with_shipping = actual_price + shipping_charge
+
+        # Calculate staged amounts based on total including shipping
+        advance_amount = round(total_with_shipping * 0.30, 2)
+
         transaction = {
             "txn_id": txn_id,
-            "product_id": data.get("product_id", ""),
-            "buyer_email": data.get("buyer_email", ""),
-            "seller_upi_id": data.get("seller_upi_id", ""),
-            "amount": float(data.get("amount", 0)),
+            "product_id": product_id,
+            "buyer_email": current_user['email'],
+            "seller_email": product.get("seller_email"),
+            "seller_upi_id": product.get("seller_upi_id", ""),
+            "item_price": actual_price,
+            "shipping_charge": shipping_charge,
+            "seller_shipping_aid": seller_shipping_aid,
+            "ngo_contribution": ngo_contribution,
+            "total_amount": total_with_shipping,
+            "paid_amount": 0,
+            "current_stage": "advance", # advance (30%), shipping (20%), final (50%)
+            "stage_amount": advance_amount,
             "status": "initiated",
-            "created_at": datetime.utcnow()
+            "created_at": datetime.utcnow(),
+            "product_snapshot": {
+                "title": product.get("title"),
+                "price": product.get("price"),
+                "seller_email": product.get("seller_email"),
+                "category": product.get("category"),
+                "image": product.get("image")
+            }
         }
         
         transactions_col.insert_one(transaction)
@@ -566,48 +971,221 @@ def create_transaction():
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/payments/confirm", methods=["POST"])
-def confirm_payment():
+@token_required
+def confirm_payment(current_user):
     """Buyer confirms that UPI payment was completed"""
     try:
         data = request.get_json()
         txn_id = data.get("txn_id", "")
         product_id = data.get("product_id", "")
-        buyer_email = data.get("buyer_email", "")
+        buyer_email = current_user['email']
         
-        # Update transaction status
+        # SECURITY: Verify the transaction exists and belongs to this buyer/product
+        # This prevents "transaction hijacking" where a user confirms a fake txn_id.
+        txn = transactions_col.find_one({
+            "txn_id": txn_id,
+            "product_id": product_id,
+            "buyer_email": buyer_email
+        })
+        if not txn:
+            return jsonify({"success": False, "error": "Invalid transaction record"}), 400
+
+        # Update transaction stage and paid amount
+        new_paid_amount = txn.get("paid_amount", 0) + txn.get("stage_amount", 0)
+        current_stage = txn.get("current_stage")
+
+        next_stage = None
+        next_amount = 0
+
+        if current_stage == "advance":
+            next_stage = "shipping"
+            next_amount = round(txn["total_amount"] * 0.20, 2)
+            status = "pending_shipping"
+        elif current_stage == "shipping":
+            next_stage = "final"
+            next_amount = round(txn["total_amount"] * 0.50, 2)
+            status = "awaiting_delivery"
+        else:
+            next_stage = "completed"
+            next_amount = 0
+            status = "completed"
+
         transactions_col.update_one(
             {"txn_id": txn_id},
-            {"$set": {"status": "completed", "completed_at": datetime.utcnow()}}
+            {"$set": {
+                "status": status,
+                "paid_amount": new_paid_amount,
+                "current_stage": next_stage,
+                "stage_amount": next_amount,
+                "completed_at": None # Payment is staged, not completed yet
+            }}
         )
         
-        # Mark product as sold
-        product = products_col.find_one({"id": product_id})
-        if product:
-            products_col.update_one(
-                {"id": product_id},
-                {"$set": {"status": "sold", "buyer_email": buyer_email}}
-            )
-            
-            # Credit eco impact to both buyer and seller
-            impact = product.get("eco_impact", {})
-            co2 = impact.get("co2", 0)
-            water = impact.get("water", 0)
-            waste = impact.get("waste", 0)
-            
-            for email in [product.get("seller_email"), buyer_email]:
-                if email:
-                    users_col.update_one(
-                        {"email": email},
-                        {"$inc": {
-                            "impact_stats.co2_saved": co2,
-                            "impact_stats.water_saved": water,
-                            "impact_stats.waste_saved": waste,
-                        }}
-                    )
-        
-        return jsonify({"success": True, "message": "Payment confirmed & item marked as sold!"}), 200
+        # Mark product status
+        # Product remains 'reserved' until buyer confirms delivery
+        product_status = "reserved"
+        products_col.update_one(
+            {"id": product_id},
+            {"$set": {
+                "status": product_status,
+                "buyer_email": buyer_email,
+                "txn_id": txn_id
+            }}
+        )
+
+        return jsonify({"success": True, "message": f"Stage {current_stage} payment recorded!"}), 200
     except Exception as e:
         app.logger.error(f"Error confirming payment: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/seller/disputes", methods=["GET"])
+@token_required
+def get_seller_disputes(current_user):
+    """Get disputes for the seller to answer"""
+    try:
+        user = users_col.find_one({"email": current_user['email']}, {"seller_disputes": 1})
+        disputes = user.get("seller_disputes", []) if user else []
+        return jsonify({"success": True, "disputes": disputes}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/seller/disputes/respond", methods=["POST"])
+@token_required
+def respond_to_dispute(current_user):
+    """Seller provides explanation for a dispute"""
+    try:
+        data = request.get_json()
+        txn_id = data.get("txn_id")
+        explanation = data.get("explanation")
+
+        users_col.update_one(
+            {"email": current_user['email'], "seller_disputes.txn_id": txn_id},
+            {"$set": {
+                "seller_disputes.$.explanation": explanation,
+                "seller_disputes.$.status": "responded",
+                "seller_disputes.$.responded_at": datetime.utcnow()
+            }}
+        )
+        return jsonify({"success": True, "message": "Response submitted to admin for review."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/payments/confirm-delivery", methods=["POST"])
+@token_required
+def confirm_delivery(current_user):
+    """Buyer confirms they received the product. This releases funds (logic-wise) and completes sale."""
+    try:
+        data = request.get_json()
+        txn_id = data.get("txn_id")
+
+        txn = transactions_col.find_one({"txn_id": txn_id, "buyer_email": current_user['email']})
+        if not txn:
+            return jsonify({"success": False, "error": "Transaction not found"}), 404
+
+        if txn.get("current_stage") != "received_confirmation_pending":
+            return jsonify({"success": False, "error": "All payment stages must be completed before confirming delivery."}), 400
+
+        # Update transaction to completed
+        transactions_col.update_one(
+            {"txn_id": txn_id},
+            {"$set": {
+                "status": "completed",
+                "current_stage": "completed",
+                "completed_at": datetime.utcnow()
+            }}
+        )
+
+        # Mark product as sold
+        product_id = txn.get("product_id")
+        products_col.update_one(
+            {"id": product_id},
+            {"$set": {"status": "sold"}}
+        )
+
+        # Credit Eco Impact
+        product = products_col.find_one({"id": product_id})
+        impact = product.get("eco_impact", {})
+
+        # Update seller stats
+        seller_email = product.get("seller_email")
+        if seller_email:
+            users_col.update_one(
+                {"email": seller_email},
+                {
+                    "$inc": {
+                        "stats.items_sold": 1,
+                        "stats.co2_saved": impact.get("co2", 0),
+                        "stats.water_saved": impact.get("water", 0),
+                        "stats.waste_saved": impact.get("waste", 0)
+                    }
+                }
+            )
+
+        return jsonify({"success": True, "message": "Delivery confirmed! Funds released to seller."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/payments/dispute", methods=["POST"])
+@token_required
+def dispute_transaction(current_user):
+    """Buyer requests a refund if product not received or issue occurred"""
+    try:
+        data = request.get_json()
+        txn_id = data.get("txn_id")
+        reason = data.get("reason")
+
+        txn = transactions_col.find_one({"txn_id": txn_id, "buyer_email": current_user['email']})
+        if not txn:
+            return jsonify({"success": False, "error": "Transaction not found"}), 404
+
+        transactions_col.update_one(
+            {"txn_id": txn_id},
+            {"$set": {
+                "status": "disputed",
+                "dispute_reason": reason,
+                "disputed_at": datetime.utcnow()
+            }}
+        )
+
+        # Return product to 'available' if payment was only partial or disputed
+        products_col.update_one(
+            {"id": txn.get("product_id")},
+            {"$set": {"status": "available", "buyer_email": None, "txn_id": None}}
+        )
+
+        # Add to seller's "To Answer" list for their dashboard
+        seller_email = txn.get("seller_email")
+        users_col.update_one(
+            {"email": seller_email},
+            {"$push": {"seller_disputes": {
+                "txn_id": txn_id,
+                "product_id": txn.get("product_id"),
+                "buyer_email": current_user['email'],
+                "reason": reason,
+                "status": "pending_explanation"
+            }}}
+        )
+
+        return jsonify({"success": True, "message": "Dispute raised. Refund processing initiated."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/payments/bill/<txn_id>", methods=["GET"])
+@token_required
+def get_bill(current_user, txn_id):
+    """Fetch the generated bill for a transaction"""
+    try:
+        txn = transactions_col.find_one({"txn_id": txn_id}, {"_id": 0})
+        if not txn:
+            return jsonify({"success": False, "error": "Transaction not found"}), 404
+
+        # Only buyer or seller or admin can see the bill
+        seller_email = txn.get('product_snapshot', {}).get('seller_email') or txn.get('seller_email')
+        if current_user['email'] not in [txn['buyer_email'], seller_email] and current_user['email'] != "admin@ecowave.com":
+            return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+        return jsonify({"success": True, "bill": txn}), 200
+    except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 # Chat Socket Events
@@ -661,6 +1239,37 @@ def handle_message(data):
                     send_chat_notification_email(recipient_email, sender_email, text, product_title)
     except Exception as e:
         app.logger.error(f"Error in chat email notification: {e}")
+
+@app.route("/api/seller/mark-shipped", methods=["POST"])
+@token_required
+def mark_as_shipped(current_user):
+    """Seller marks the item as shipped, which allows the buyer to pay the shipping stage (20%)."""
+    try:
+        data = request.get_json()
+        txn_id = data.get("txn_id")
+
+        txn = transactions_col.find_one({"txn_id": txn_id, "seller_email": current_user['email']})
+        if not txn:
+            return jsonify({"success": False, "error": "Transaction not found or unauthorized"}), 404
+
+        # Allow shipping if advance is paid
+        if txn.get("current_stage") != "shipping":
+            return jsonify({"success": False, "error": "Buyer must pay advance before shipping."}), 400
+
+        # Update transaction status
+        transactions_col.update_one(
+            {"txn_id": txn_id},
+            {"$set": {
+                "shipped": True,
+                "shipping_date": datetime.utcnow().isoformat(),
+                "status": "shipped",
+                "shipped_at": datetime.utcnow()
+            }}
+        )
+
+        return jsonify({"success": True, "message": "Item marked as shipped. Buyer can now pay the shipping stage (20%)."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
     # Python 3.13 + eventlet is unstable. Using standard Flask runner.

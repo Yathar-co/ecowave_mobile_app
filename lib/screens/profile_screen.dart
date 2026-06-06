@@ -5,6 +5,7 @@ import '../models/models.dart';
 import '../providers/auth_provider.dart';
 import '../providers/profile_provider.dart';
 import '../screens/marketplace_screen.dart';
+import '../screens/bill_dialog.dart';
 import '../theme/app_theme.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -19,9 +20,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final user = context.read<AuthProvider>().user;
-      if (user != null) {
-        context.read<ProfileProvider>().load(user.email);
+      final auth = context.read<AuthProvider>();
+      if (auth.user != null) {
+        auth.refreshProfile(); // Get latest stats and badges
+        context.read<ProfileProvider>().load(auth.user!.email);
       }
     });
   }
@@ -64,6 +66,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         style: TextButton.styleFrom(padding: EdgeInsets.zero),
                       ),
                     ]),
+                    
+                    if (user.email == 'admin@ecowave.com') ...[
+                      const SizedBox(height: 8),
+                      TextButton.icon(
+                        onPressed: () => context.push('/admin'),
+                        icon: const Icon(Icons.admin_panel_settings, color: ecoGreenLight, size: 18),
+                        label: const Text('Admin Dashboard', style: TextStyle(color: ecoGreenLight, fontSize: 13)),
+                        style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                      ),
+                    ] else if (profile.listings.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      TextButton.icon(
+                        onPressed: () => context.push('/seller-dashboard'),
+                        icon: const Icon(Icons.dashboard, color: ecoGreenLight, size: 18),
+                        label: const Text('Seller Dashboard', style: TextStyle(color: ecoGreenLight, fontSize: 13)),
+                        style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                      ),
+                    ],
 
                     const SizedBox(height: 16),
 
@@ -87,11 +107,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                       const SizedBox(width: 14),
                       Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(user.name,
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700)),
+                        Row(
+                          children: [
+                            Text(user.name,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700)),
+                            if (user.isVerified) ...[
+                              const SizedBox(width: 6),
+                              const Icon(Icons.verified, color: ecoGreen, size: 16),
+                            ],
+                          ],
+                        ),
                         Text(user.email,
                             style: TextStyle(color: ecoMuted, fontSize: 13),
                             overflow: TextOverflow.ellipsis),
@@ -142,6 +170,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     itemCount: profile.listings.length,
                     itemBuilder: (_, i) => _ListingCard(
                       product: profile.listings[i],
+                      onMarkShipped: () => profile.markAsShipped(profile.listings[i].txnId ?? ''),
                       onDelete: () async {
                         final ok = await showDialog<bool>(
                           context: context,
@@ -154,11 +183,60 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       },
                     ),
                   ),
+
+                const SizedBox(height: 32),
+
+                // ── My Purchases ─────────────────────────────────────────
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  const Text('🛍️ My Purchases',
+                      style: TextStyle(
+                          color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+                  Text('${profile.purchases.length} items',
+                      style: TextStyle(color: ecoMuted, fontSize: 12)),
+                ]),
+                const SizedBox(height: 12),
+
+                if (profile.isLoading)
+                  const Center(child: CircularProgressIndicator(color: ecoGreen))
+                else if (profile.purchases.isEmpty)
+                  _EmptyPurchases()
+                else
+                  ListView.separated(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: profile.purchases.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 12),
+                    itemBuilder: (_, i) => _PurchaseCard(
+                      product: profile.purchases[i],
+                      onReview: () => _showReviewDialog(context, profile.purchases[i]),
+                      onViewBill: () => _showBill(context, profile.purchases[i].txnId),
+                    ),
+                  ),
               ]),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  void _showBill(BuildContext context, String? txnId) {
+    if (txnId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Bill not available for this transaction'), backgroundColor: ecoError),
+      );
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (_) => BillDialog(txnId: txnId),
+    );
+  }
+
+  void _showReviewDialog(BuildContext context, Product product) {
+    showDialog(
+      context: context,
+      builder: (_) => _ReviewDialog(product: product),
     );
   }
 }
@@ -217,7 +295,8 @@ class _StatCard extends StatelessWidget {
 class _ListingCard extends StatelessWidget {
   final Product product;
   final VoidCallback onDelete;
-  const _ListingCard({required this.product, required this.onDelete});
+  final VoidCallback onMarkShipped;
+  const _ListingCard({required this.product, required this.onDelete, required this.onMarkShipped});
 
   @override
   Widget build(BuildContext context) => Container(
@@ -240,11 +319,11 @@ class _ListingCard extends StatelessWidget {
               decoration: BoxDecoration(
                 color: product.status == 'sold'
                     ? ecoMuted.withValues(alpha: 0.8)
-                    : ecoLeaf.withValues(alpha: 0.9),
+                    : product.status == 'reserved' ? Colors.orange.withValues(alpha: 0.9) : ecoLeaf.withValues(alpha: 0.9),
                 borderRadius: BorderRadius.circular(50),
               ),
               child: Text(
-                product.status == 'sold' ? 'Sold' : 'Active',
+                product.status.toUpperCase(),
                 style: const TextStyle(
                     color: Colors.white, fontSize: 9, fontWeight: FontWeight.w600),
               ),
@@ -268,10 +347,13 @@ class _ListingCard extends StatelessWidget {
         ]),
       ),
       Flexible(
-        flex: 3,
+        flex: 4,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
             Text(product.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -281,6 +363,22 @@ class _ListingCard extends StatelessWidget {
             Text('₹${product.price.toStringAsFixed(0)}',
                 style: const TextStyle(
                     color: ecoGreenLight, fontWeight: FontWeight.w700, fontSize: 13)),
+            if (product.status == 'reserved' && product.txnId != null) ...[
+              const Spacer(),
+              SizedBox(
+                width: double.infinity,
+                height: 24,
+                child: ElevatedButton(
+                  onPressed: onMarkShipped,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: ecoGreen,
+                    padding: EdgeInsets.zero,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                  ),
+                  child: const Text('Mark Shipped', style: TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
           ]),
         ),
       ),
@@ -320,6 +418,217 @@ class _EmptyListings extends StatelessWidget {
       ),
     ]),
   );
+}
+
+// ── Purchase Card ──────────────────────────────────────────────────────────────
+
+class _PurchaseCard extends StatelessWidget {
+  final Product product;
+  final VoidCallback onReview;
+  final VoidCallback onViewBill;
+  const _PurchaseCard({required this.product, required this.onReview, required this.onViewBill});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: ecoCard,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: ecoBorder),
+    ),
+    child: Row(children: [
+      ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SizedBox(
+          width: 65, height: 65,
+          child: ProductImage(image: product.image),
+        ),
+      ),
+      const SizedBox(width: 12),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(product.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+                color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
+        Text('Sold by ${product.sellerEmail}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: ecoMuted, fontSize: 11)),
+        const SizedBox(height: 4),
+        Text('₹${product.price.toStringAsFixed(0)}',
+            style: const TextStyle(
+                color: ecoGreenLight, fontWeight: FontWeight.w800, fontSize: 16)),
+      ])),
+      const SizedBox(width: 8),
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ElevatedButton(
+            onPressed: onReview,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: ecoLeaf.withValues(alpha: 0.1),
+              foregroundColor: ecoGreenLight,
+              elevation: 0,
+              side: const BorderSide(color: ecoLeaf, width: 0.5),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+              minimumSize: const Size(80, 32),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Review', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton(
+            onPressed: onViewBill,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white70,
+              side: BorderSide(color: ecoBorder),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+              minimumSize: const Size(80, 32),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Bill', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    ]),
+  );
+}
+
+// ── Empty Purchases ───────────────────────────────────────────────────────────
+
+class _EmptyPurchases extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(24),
+    decoration: BoxDecoration(
+      color: ecoCard,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: ecoBorder),
+    ),
+    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      const Text('🛒', style: TextStyle(fontSize: 40)),
+      const SizedBox(height: 8),
+      const Text('No purchases yet',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+      const SizedBox(height: 4),
+      Text('Find sustainable treasures!', style: TextStyle(color: ecoMuted, fontSize: 13)),
+    ]),
+  );
+}
+
+// ── Review Dialog ─────────────────────────────────────────────────────────────
+
+class _ReviewDialog extends StatefulWidget {
+  final Product product;
+  const _ReviewDialog({required this.product});
+
+  @override
+  State<_ReviewDialog> createState() => _ReviewDialogState();
+}
+
+class _ReviewDialogState extends State<_ReviewDialog> {
+  double _rating = 5.0;
+  final _commentCtrl = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _commentCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    setState(() => _submitting = true);
+    try {
+      await context.read<ProfileProvider>().addReview(
+        productId: widget.product.id,
+        rating: _rating,
+        comment: _commentCtrl.text,
+      );
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Thank you for your review!'), backgroundColor: ecoGreen),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString()), backgroundColor: ecoError),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: ecoSurface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Write a Review',
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Text(widget.product.title,
+                style: TextStyle(color: ecoMuted, fontSize: 13), textAlign: TextAlign.center),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(5, (index) {
+                return IconButton(
+                  onPressed: () => setState(() => _rating = index + 1.0),
+                  icon: Icon(
+                    index < _rating ? Icons.star : Icons.star_border,
+                    color: Colors.orangeAccent,
+                    size: 32,
+                  ),
+                );
+              }),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _commentCtrl,
+              maxLines: 3,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Share your experience...',
+                hintStyle: TextStyle(color: ecoMuted),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Row(children: [
+              Expanded(
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text('Cancel', style: TextStyle(color: ecoMuted)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: _submitting ? null : _submit,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: ecoGreen,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: _submitting
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Text('Submit', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 // ── Delete Confirmation ───────────────────────────────────────────────────────

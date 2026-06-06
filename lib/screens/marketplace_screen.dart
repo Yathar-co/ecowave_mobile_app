@@ -9,6 +9,8 @@ import '../providers/marketplace_provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
+import 'report_dialog.dart';
+import 'bill_dialog.dart';
 
 const _categories = [
   ('all', 'All Items', '🌍'),
@@ -379,6 +381,13 @@ class _ProductDetailSheetState extends State<ProductDetailSheet> {
     final product = widget.product;
     final user = context.read<AuthProvider>().user;
 
+    if (user?.email == product.sellerEmail) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ You cannot buy your own product'), backgroundColor: ecoError),
+      );
+      return;
+    }
+
     if (product.sellerUpiId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('⚠️ Seller has not set a UPI ID'), backgroundColor: ecoError),
@@ -386,7 +395,7 @@ class _ProductDetailSheetState extends State<ProductDetailSheet> {
       return;
     }
 
-    final paid = await showModalBottomSheet<bool>(
+    final txnId = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: ecoSurface,
       isScrollControlled: true,
@@ -399,12 +408,17 @@ class _ProductDetailSheetState extends State<ProductDetailSheet> {
       ),
     );
 
-    if (paid == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('🎉 Payment confirmed! Item marked as sold.'), backgroundColor: ecoGreen),
-      );
-      Navigator.pop(context);
+    if (txnId != null && mounted) {
+      // Payment flow returned a txnId, meaning first stage is confirmed.
+      Navigator.pop(context); // Close product details
       context.read<MarketplaceProvider>().loadProducts();
+      
+      // Immediately show bill
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => BillDialog(txnId: txnId),
+      );
     }
   }
 
@@ -441,6 +455,13 @@ class _ProductDetailSheetState extends State<ProductDetailSheet> {
           const Text('Description', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
           const SizedBox(height: 6),
           Text(product.description, style: TextStyle(color: ecoMuted, fontSize: 14, height: 1.6)),
+          
+          // --- Seller Info Section ---
+          const SizedBox(height: 24),
+          const Text('Seller Information', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
+          const SizedBox(height: 12),
+          _SellerTrustCard(sellerEmail: product.sellerEmail, sellerName: product.sellerId),
+
           if (product.sellerLocation.isNotEmpty) ...[
             const SizedBox(height: 8),
             Row(children: [
@@ -468,8 +489,165 @@ class _ProductDetailSheetState extends State<ProductDetailSheet> {
               onPressed: () { Navigator.pop(context); context.push('/chat', extra: product); },
               child: const Text('Chat', style: TextStyle(color: ecoGreenLight))))),
           ]),
+          const SizedBox(height: 16),
+          Center(
+            child: TextButton.icon(
+              onPressed: () => showDialog(
+                context: context,
+                builder: (_) => ReportDialog(
+                  targetId: product.id,
+                  targetType: 'product',
+                  targetName: product.title,
+                ),
+              ),
+              icon: const Icon(Icons.report_problem_outlined, size: 16, color: ecoError),
+              label: const Text('Report this listing', style: TextStyle(color: ecoError, fontSize: 12)),
+            ),
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _SellerTrustCard extends StatefulWidget {
+  final String sellerEmail;
+  final String sellerName;
+  const _SellerTrustCard({required this.sellerEmail, required this.sellerName});
+
+  @override
+  State<_SellerTrustCard> createState() => _SellerTrustCardState();
+}
+
+class _SellerTrustCardState extends State<_SellerTrustCard> {
+  User? _seller;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSeller();
+  }
+
+  Future<void> _loadSeller() async {
+    try {
+      final user = await ApiService().getUserProfile(widget.sellerEmail);
+      if (mounted) setState(() => _seller = user);
+    } catch (_) {}
+    if (mounted) setState(() => _loading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+    if (_seller == null) return const SizedBox.shrink();
+
+    final s = _seller!;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: ecoCard,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: ecoBorder),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44, height: 44,
+                decoration: const BoxDecoration(color: ecoSurface, shape: BoxShape.circle),
+                child: Center(child: Text(s.name.isNotEmpty ? s.name[0].toUpperCase() : '?',
+                    style: const TextStyle(color: ecoGreen, fontWeight: FontWeight.bold, fontSize: 18))),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(s.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        if (s.isTrustedSeller) ...[
+                          const SizedBox(width: 6),
+                          const Icon(Icons.verified, color: ecoGreen, size: 16),
+                        ],
+                      ],
+                    ),
+                    Text('Member since ${s.createdAt.split('T')[0]}', style: TextStyle(color: ecoMuted, fontSize: 11)),
+                  ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.star, color: Colors.amber, size: 16),
+                      const SizedBox(width: 4),
+                      Text(s.rating.toStringAsFixed(1), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  Text('${s.salesCount} sales', style: TextStyle(color: ecoMuted, fontSize: 11)),
+                ],
+              ),
+            ],
+          ),
+          const Divider(color: ecoBorder, height: 24),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              _TrustIndicator(
+                icon: Icons.speed,
+                label: 'Response',
+                value: 'Fast',
+              ),
+              _TrustIndicator(
+                icon: Icons.check_circle_outline,
+                label: 'Verified',
+                value: s.isVerified ? 'Yes' : 'No',
+                color: s.isVerified ? ecoGreen : ecoMuted,
+              ),
+              GestureDetector(
+                onTap: () => showDialog(
+                  context: context,
+                  builder: (_) => ReportDialog(
+                    targetId: s.email,
+                    targetType: 'user',
+                    targetName: s.name,
+                  ),
+                ),
+                child: const Text('Report Seller', style: TextStyle(color: ecoError, fontSize: 12, decoration: TextDecoration.underline)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TrustIndicator extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color? color;
+  const _TrustIndicator({required this.icon, required this.label, required this.value, this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 14, color: color ?? ecoMuted),
+        const SizedBox(width: 6),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: TextStyle(color: ecoMuted, fontSize: 9)),
+            Text(value, style: TextStyle(color: color ?? Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -675,18 +853,18 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
   String? _txnId;
   bool _launching = false;
   bool _confirming = false;
-  bool _upiLaunched = false;
 
   String get _upiUrl {
     final p = widget.product;
-    final amount = p.price.toStringAsFixed(2);
+    final amount = (p.price * 0.3).toStringAsFixed(2); // Initial 30% stage
     return 'upi://pay?pa=${Uri.encodeComponent(p.sellerUpiId)}'
         '&pn=${Uri.encodeComponent("EcoWave Seller")}'
         '&am=$amount&cu=INR'
-        '&tn=${Uri.encodeComponent("EcoWave: ${p.title}")}';
+        '&tn=${Uri.encodeComponent("EcoWave: ${p.title} (Advance)")}';
   }
 
   Future<void> _initTransaction() async {
+    if (_txnId != null) return;
     try {
       final txn = await ApiService().createTransaction(
         productId: widget.product.id,
@@ -694,46 +872,92 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
         sellerUpiId: widget.product.sellerUpiId,
         amount: widget.product.price,
       );
-      setState(() => _txnId = txn['txn_id'] as String?);
-    } catch (_) {}
+      if (mounted) setState(() => _txnId = txn['txn_id'] as String?);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to initialize: $e'), backgroundColor: ecoError),
+        );
+      }
+    }
   }
 
   Future<void> _launchUpi() async {
     setState(() => _launching = true);
     await _initTransaction();
+    if (_txnId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to initiate transaction'), backgroundColor: ecoError),
+        );
+      }
+      setState(() => _launching = false);
+      return;
+    }
     final uri = Uri.parse(_upiUrl);
     try {
-      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (launched) setState(() => _upiLaunched = true);
-    } catch (_) {}
+      final launched = await launchUrl(uri, mode: LaunchMode.externalNonBrowserApplication);
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No UPI app found. Please use the QR code.'), backgroundColor: ecoError),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: ecoError),
+        );
+      }
+    }
     setState(() => _launching = false);
   }
 
   Future<void> _confirmPayment() async {
-    if (_txnId == null) await _initTransaction();
+    await _initTransaction();
+    if (_txnId == null) return;
+
     setState(() => _confirming = true);
-    final success = await ApiService().confirmPayment(
-      txnId: _txnId ?? '',
-      productId: widget.product.id,
-      buyerEmail: widget.buyerEmail,
-    );
-    setState(() => _confirming = false);
-    if (mounted) Navigator.pop(context, success);
+    try {
+      final success = await ApiService().confirmPayment(
+        txnId: _txnId ?? '',
+        productId: widget.product.id,
+        buyerEmail: widget.buyerEmail,
+      );
+      if (mounted) {
+        if (success) {
+          Navigator.pop(context, _txnId);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Payment confirmation failed'), backgroundColor: ecoError),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString().replaceAll('Exception: ', '')), backgroundColor: ecoError),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _confirming = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final p = widget.product;
+    final advanceAmount = (p.price * 0.3).toStringAsFixed(0);
+
     return Padding(
       padding: EdgeInsets.fromLTRB(24, 16, 24, MediaQuery.of(context).viewInsets.bottom + 32),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(width: 40, height: 4,
           decoration: BoxDecoration(color: ecoBorder, borderRadius: BorderRadius.circular(2))),
         const SizedBox(height: 16),
-        const Text('💳 Pay via UPI',
+        const Text('🛡️ Secure Escrow Payment',
             style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
         const SizedBox(height: 4),
-        Text('Pay directly to the seller', style: TextStyle(color: ecoMuted, fontSize: 13)),
+        Text('Pay 30% advance to secure the item.', style: TextStyle(color: ecoMuted, fontSize: 13)),
         const SizedBox(height: 20),
 
         // Order summary
@@ -746,14 +970,19 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
               Expanded(child: Text(p.title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
                 maxLines: 2, overflow: TextOverflow.ellipsis)),
               const SizedBox(width: 12),
-              Text('₹${p.price.toStringAsFixed(0)}',
-                  style: const TextStyle(color: ecoGreenLight, fontWeight: FontWeight.w900, fontSize: 20)),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text('₹$advanceAmount', style: const TextStyle(color: ecoGreenLight, fontWeight: FontWeight.w900, fontSize: 22)),
+                  Text('Advance (30%)', style: TextStyle(color: ecoMuted, fontSize: 10)),
+                ],
+              ),
             ]),
-            const SizedBox(height: 10),
+            const Divider(color: ecoBorder, height: 24),
             Row(children: [
               const Icon(Icons.account_balance_wallet_outlined, size: 14, color: ecoGreenLight),
               const SizedBox(width: 6),
-              Expanded(child: Text('Paying to: ${p.sellerUpiId}',
+              Expanded(child: Text('Seller: ${p.sellerUpiId}',
                   style: TextStyle(color: ecoMuted, fontSize: 12))),
             ]),
           ]),
@@ -764,40 +993,40 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
-          child: QrImageView(data: _upiUrl, version: QrVersions.auto, size: 200,
-            eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.roundedOuter, color: Color(0xFF111811)),
-            dataModuleStyle: const QrDataModuleStyle(dataModuleShape: QrDataModuleShape.roundedOutsideCorners, color: Color(0xFF111811))),
+          child: QrImageView(data: _upiUrl, version: QrVersions.auto, size: 160,
+            eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: Color(0xFF111811)),
+            dataModuleStyle: const QrDataModuleStyle(dataModuleShape: QrDataModuleShape.square, color: Color(0xFF111811))),
         ),
         const SizedBox(height: 8),
-        Text('Scan with any UPI app (GPay, PhonePe, Paytm)',
+        Text('Scan QR or use button below',
             style: TextStyle(color: ecoMuted, fontSize: 11)),
         const SizedBox(height: 20),
 
         // Pay with UPI App button
-        SizedBox(width: double.infinity, height: 52, child: DecoratedBox(
+        SizedBox(width: double.infinity, height: 50, child: DecoratedBox(
           decoration: BoxDecoration(gradient: ecoGreenGradient, borderRadius: BorderRadius.circular(14)),
           child: TextButton(
             onPressed: _launching ? null : _launchUpi,
             child: _launching
               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
               : Row(mainAxisAlignment: MainAxisAlignment.center, children: const [
-                  Icon(Icons.open_in_new, color: Colors.white, size: 18),
+                  Icon(Icons.payment, color: Colors.white, size: 18),
                   SizedBox(width: 8),
-                  Text('Open UPI App', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15)),
+                  Text('Open UPI App', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 ]),
           ),
         )),
         const SizedBox(height: 12),
 
         // Confirm payment button
-        SizedBox(width: double.infinity, height: 52, child: OutlinedButton(
+        SizedBox(width: double.infinity, height: 50, child: OutlinedButton(
           style: OutlinedButton.styleFrom(side: const BorderSide(color: ecoGreen),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
           onPressed: _confirming ? null : _confirmPayment,
           child: _confirming
             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: ecoGreenLight, strokeWidth: 2))
-            : const Text('✅ I have completed the payment',
-                style: TextStyle(color: ecoGreenLight, fontWeight: FontWeight.w600)),
+            : const Text('I Have Sent the Advance',
+                style: TextStyle(color: ecoGreenLight, fontWeight: FontWeight.bold)),
         )),
       ]),
     );

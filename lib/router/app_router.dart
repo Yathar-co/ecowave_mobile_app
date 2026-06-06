@@ -9,18 +9,37 @@ import '../screens/sell_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/chat_screen.dart';
 import '../screens/map_screen.dart';
+import '../screens/admin_dashboard.dart';
+import '../screens/seller_dashboard.dart';
 import '../models/models.dart';
 import '../theme/app_theme.dart';
 
 class AppRouter {
   static GoRouter build(AuthProvider auth) => GoRouter(
-        initialLocation: auth.isLoggedIn ? '/marketplace' : '/landing',
+        initialLocation: auth.isLoggedIn 
+            ? (auth.user?.email == 'admin@ecowave.com' ? '/admin' : '/marketplace') 
+            : '/landing',
         redirect: (context, state) {
-          final loggedIn = context.read<AuthProvider>().isLoggedIn;
-          final protected = ['/sell', '/profile'];
+          final user = context.read<AuthProvider>().user;
+          final loggedIn = user != null;
+          final isAdmin = user?.email == 'admin@ecowave.com';
+
+          // Redirect Admin to dashboard if they try to access regular user screens
+          if (isAdmin && (state.matchedLocation == '/marketplace' || state.matchedLocation == '/sell' || state.matchedLocation == '/profile')) {
+            return '/admin';
+          }
+
+          // Protect routes
+          final protected = ['/sell', '/profile', '/admin'];
           if (!loggedIn && protected.contains(state.matchedLocation)) {
             return '/login';
           }
+
+          // Protect admin route from non-admins
+          if (state.matchedLocation == '/admin' && !isAdmin) {
+            return '/marketplace';
+          }
+
           return null;
         },
         routes: [
@@ -60,6 +79,14 @@ class AppRouter {
           GoRoute(
             path: '/map',
             builder: (context, state) => MapScreen(product: state.extra as Product),
+          ),
+          GoRoute(
+            path: '/admin',
+            builder: (context, state) => const AdminDashboard(),
+          ),
+          GoRoute(
+            path: '/seller-dashboard',
+            builder: (context, state) => const SellerDashboard(),
           ),
         ],
       );

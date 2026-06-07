@@ -1,0 +1,12 @@
+Flask
+Flask-Cors
+Flask-SocketIO
+eventlet
+pymongo
+python-dotenv
+PyJWT
+Authlib
+requests
+python-dateutil
+certifi
+gunicorn

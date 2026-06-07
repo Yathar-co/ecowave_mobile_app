@@ -1,0 +1,34 @@
+{
+  "project_info": {
+    "project_number": "983958658964",
+    "project_id": "ecowave-480909",
+    "storage_bucket": "ecowave-480909.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:983958658964:android:900c14c21238a6cebd1f86",
+        "android_client_info": {
+          "package_name": "com.ecowave.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "983958658964-c7b2n8l9kj01t1f0mc9dho7rtabriqe6.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-_SD5BiOuNhqF8HGU_G35m2y9lm8Mcn4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

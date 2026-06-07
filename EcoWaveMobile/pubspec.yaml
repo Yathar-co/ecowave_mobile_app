@@ -1,0 +1,58 @@
+name: ecowave_flutter
+description: EcoWave — sustainable goods marketplace
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP
+  dio: ^5.4.3+1
+
+  # State management
+  provider: ^6.1.2
+
+  # Navigation
+  go_router: ^14.2.7
+
+  # Storage
+  shared_preferences: ^2.2.3
+
+  # Auth
+  google_sign_in: ^6.2.1
+
+  # Images
+  cached_network_image: ^3.3.1
+  image_picker: ^1.1.2
+
+  # Maps (free — no API key needed)
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.1
+  geolocator: ^11.0.0
+
+  # Real-time Chat
+  socket_io_client: ^3.0.1
+
+  # Payments (Direct UPI — no gateway needed)
+  url_launcher: ^6.2.5
+  qr_flutter: ^4.1.0
+
+  # Fonts
+  google_fonts: ^6.2.1
+
+  # UI
+  flutter_animate: ^4.5.0
+
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

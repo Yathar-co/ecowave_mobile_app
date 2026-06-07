@@ -19,7 +19,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// 🔧 SET YOUR DEPLOYED / LAN BACKEND URL HERE
 /// Leave empty to auto-detect for emulator usage.
-const String _productionUrl = 'http://192.168.29.225:5001';
+const String _productionUrl = 'https://ecowavemobile-y4aq.onrender.com';
 
 /// Port used by the backend server
 const int _serverPort = 5001;

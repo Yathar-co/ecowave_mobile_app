@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">ecowave-mobile-app.onrender.com</domain>
+        <domain includeSubdomains="true">ecowavemobile-y4aq.onrender.com</domain>
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">192.168.29.225</domain>
     </domain-config>

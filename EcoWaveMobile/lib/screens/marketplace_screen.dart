@@ -36,7 +36,10 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<MarketplaceProvider>().loadProducts();
+      final user = context.read<AuthProvider>().user;
+      final mp = context.read<MarketplaceProvider>();
+      mp.setUserEmail(user?.email);
+      mp.loadProducts();
     });
   }
 
@@ -854,13 +857,15 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
   bool _launching = false;
   bool _confirming = false;
 
-  String get _upiUrl {
+  String _buildUpiUrl(String txnId) {
     final p = widget.product;
     final amount = (p.price * 0.3).toStringAsFixed(2); // Initial 30% stage
     return 'upi://pay?pa=${Uri.encodeComponent(p.sellerUpiId)}'
         '&pn=${Uri.encodeComponent("EcoWave Seller")}'
         '&am=$amount&cu=INR'
-        '&tn=${Uri.encodeComponent("EcoWave: ${p.title} (Advance)")}';
+        '&tr=${Uri.encodeComponent(txnId)}'
+        '&tn=${Uri.encodeComponent("EcoWave: ${p.title} (Advance)")}'
+        '&mc=0000'; // Generic merchant code for compatibility
   }
 
   Future<void> _initTransaction() async {
@@ -894,7 +899,7 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
       setState(() => _launching = false);
       return;
     }
-    final uri = Uri.parse(_upiUrl);
+    final uri = Uri.parse(_buildUpiUrl(_txnId!));
     try {
       final launched = await launchUrl(uri, mode: LaunchMode.externalNonBrowserApplication);
       if (!launched && mounted) {
@@ -993,7 +998,7 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
-          child: QrImageView(data: _upiUrl, version: QrVersions.auto, size: 160,
+          child: QrImageView(data: _txnId != null ? _buildUpiUrl(_txnId!) : _buildUpiUrl('pending'), version: QrVersions.auto, size: 160,
             eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: Color(0xFF111811)),
             dataModuleStyle: const QrDataModuleStyle(dataModuleShape: QrDataModuleShape.square, color: Color(0xFF111811))),
         ),

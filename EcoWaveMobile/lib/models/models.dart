@@ -275,12 +275,14 @@ class ChatMessage {
   final String text;
   final String createdAt;
   final bool isMe;
+  final String? msgId;
 
   ChatMessage({
     required this.sender,
     required this.text,
     required this.createdAt,
     this.isMe = false,
+    this.msgId,
   });
 
   factory ChatMessage.fromJson(Map<String, dynamic> j, String myEmail) => ChatMessage(
@@ -288,5 +290,6 @@ class ChatMessage {
         text: j['text'] as String? ?? '',
         createdAt: j['created_at'] as String? ?? '',
         isMe: j['sender'] == myEmail,
+        msgId: j['msg_id'] as String?,
       );
 }

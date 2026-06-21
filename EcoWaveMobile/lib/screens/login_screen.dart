@@ -24,6 +24,8 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  static final _emailRegex = RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$');
+
   Future<void> _submit() async {
     final email = _emailCtrl.text.trim();
     final pass = _passCtrl.text.trim();
@@ -31,6 +33,13 @@ class _LoginScreenState extends State<LoginScreen> {
     if (email.isEmpty || pass.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter email and password')),
+      );
+      return;
+    }
+
+    if (!_emailRegex.hasMatch(email)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a valid email address'), backgroundColor: ecoError),
       );
       return;
     }
@@ -250,6 +259,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Future<void> _submit() async {
     final email = _emailCtrl.text.trim();
     if (email.isEmpty) return;
+
+    final emailRegex = RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$');
+    if (!emailRegex.hasMatch(email)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a valid email address'), backgroundColor: ecoError),
+      );
+      return;
+    }
+
+    if (_userCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a username'), backgroundColor: ecoError),
+      );
+      return;
+    }
+
+    if (_passCtrl.text.trim().length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password must be at least 6 characters'), backgroundColor: ecoError),
+      );
+      return;
+    }
 
     setState(() => _loading = true);
     

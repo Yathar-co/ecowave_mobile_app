@@ -39,11 +39,17 @@ class EcoWaveApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final marketplaceProvider = MarketplaceProvider();
+    final sellProvider = SellProvider();
+
+    // Wire up cross-provider cache invalidation
+    sellProvider.onProductListed = () => marketplaceProvider.invalidateCache();
+
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: auth),
-        ChangeNotifierProvider(create: (_) => MarketplaceProvider()),
-        ChangeNotifierProvider(create: (_) => SellProvider()),
+        ChangeNotifierProvider.value(value: marketplaceProvider),
+        ChangeNotifierProvider.value(value: sellProvider),
         ChangeNotifierProvider(create: (_) => ProfileProvider()),
         ChangeNotifierProvider(create: (_) => ChatProvider()),
       ],

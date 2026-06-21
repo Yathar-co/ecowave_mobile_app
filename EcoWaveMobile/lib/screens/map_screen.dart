@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/models.dart';
 import '../theme/app_theme.dart';
 
@@ -101,6 +102,34 @@ class MapScreen extends StatelessWidget {
           ),
         ],
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: ecoGreen,
+        icon: const Icon(Icons.directions, color: Colors.white),
+        label: const Text('Open Directions', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+        onPressed: () => _openDirections(context, location['lat']!, location['lng']!),
+      ),
     );
+  }
+
+  Future<void> _openDirections(BuildContext context, double lat, double lng) async {
+    // Try Google Maps first, then fall back to generic geo URI
+    final googleMapsUrl = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving',
+    );
+    
+    try {
+      final launched = await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication);
+      if (!launched) {
+        // Fallback: try generic geo URI (works with any maps app)
+        final geoUri = Uri.parse('geo:$lat,$lng?q=$lat,$lng');
+        await launchUrl(geoUri);
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open maps: $e'), backgroundColor: ecoError),
+        );
+      }
+    }
   }
 }

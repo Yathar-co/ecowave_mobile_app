@@ -3,6 +3,13 @@ import 'package:socket_io_client/socket_io_client.dart' as socket_io;
 import '../models/models.dart';
 import '../config/server_config.dart';
 
+/// Generates a simple unique ID (avoids adding uuid package dependency)
+String _generateMsgId() {
+  final now = DateTime.now().microsecondsSinceEpoch;
+  final hash = now.hashCode.toRadixString(36);
+  return 'msg_${hash}_${now % 100000}';
+}
+
 class ChatProvider extends ChangeNotifier {
   socket_io.Socket? _socket;
   List<ChatMessage> _messages = [];
@@ -42,23 +49,42 @@ class ChatProvider extends ChangeNotifier {
     _socket!.on('message', (data) {
       final newMessage = ChatMessage.fromJson(data, _currentUserEmail ?? '');
       
-      // Better duplicate check using both text and timestamp
-      bool isDuplicate = _messages.any((m) => 
-        m.sender == newMessage.sender && 
-        m.text == newMessage.text && 
-        m.isMe
-      );
-      
-      if (!isDuplicate) {
-        _messages.add(newMessage);
-        notifyListeners();
+      // Deduplicate by msg_id (handles optimistic updates + server echoes)
+      if (newMessage.msgId != null) {
+        final existingIdx = _messages.indexWhere((m) => m.msgId == newMessage.msgId);
+        if (existingIdx != -1) {
+          // Already have this message (from optimistic update), skip
+          return;
+        }
+      } else {
+        // Fallback: avoid exact duplicates from same sender with same text (within 5 seconds)
+        bool isDuplicate = _messages.any((m) =>
+          m.sender == newMessage.sender &&
+          m.text == newMessage.text &&
+          _isRecentTimestamp(m.createdAt, newMessage.createdAt)
+        );
+        if (isDuplicate) return;
       }
+      
+      _messages.add(newMessage);
+      notifyListeners();
     });
 
     _socket!.on('history', (data) {
       _messages = (data as List).map((m) => ChatMessage.fromJson(m, _currentUserEmail ?? '')).toList();
       notifyListeners();
     });
+  }
+
+  /// Check if two timestamps are within 5 seconds of each other
+  bool _isRecentTimestamp(String ts1, String ts2) {
+    try {
+      final d1 = DateTime.parse(ts1);
+      final d2 = DateTime.parse(ts2);
+      return d1.difference(d2).abs() < const Duration(seconds: 5);
+    } catch (_) {
+      return true; // If we can't parse, assume duplicate to be safe
+    }
   }
 
   void joinRoom(String roomId) {
@@ -70,12 +96,15 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void sendMessage(String roomId, String sender, String text) {
-    // Optimistic Update
+    final msgId = _generateMsgId();
+
+    // Optimistic Update with msg_id for deduplication
     final tempMsg = ChatMessage(
       sender: sender,
       text: text,
       createdAt: DateTime.now().toIso8601String(),
       isMe: true,
+      msgId: msgId,
     );
     _messages.add(tempMsg);
     notifyListeners();
@@ -84,6 +113,7 @@ class ChatProvider extends ChangeNotifier {
       'room': roomId,
       'sender': sender,
       'text': text,
+      'msg_id': msgId,
     });
   }
 

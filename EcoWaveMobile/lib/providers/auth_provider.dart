@@ -105,16 +105,25 @@ class AuthProvider extends ChangeNotifier {
       );
       
       if (account == null) return;
+
+      // Get the ID token for server-side verification
+      String? idToken;
+      try {
+        final auth = await account.authentication;
+        idToken = auth.idToken;
+      } catch (_) {
+        // If we can't get the ID token, fall back to email-only (dev mode)
+      }
       
-      await loginWithGoogleManual(account.email, account.displayName ?? account.email.split('@')[0]);
+      await loginWithGoogleManual(account.email, account.displayName ?? account.email.split('@')[0], idToken: idToken);
     } catch (e) {
       throw _handleError(e);
     }
   }
 
-  Future<void> loginWithGoogleManual(String email, String name) async {
+  Future<void> loginWithGoogleManual(String email, String name, {String? idToken}) async {
     try {
-      _user = await _api.loginWithGoogle(email, name);
+      _user = await _api.loginWithGoogle(email: email, name: name, idToken: idToken);
       _api.setToken(_user?.token);
       await _persist();
       notifyListeners();

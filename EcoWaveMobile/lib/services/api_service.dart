@@ -58,6 +58,9 @@ class ApiService {
       },
     ));
 
+    // Retry interceptor for Render cold start (502/503/504 and connection errors)
+    _dio.interceptors.add(_RetryInterceptor(_dio));
+
     _dio.interceptors.add(LogInterceptor(
       request: false,
       requestBody: true,
@@ -126,11 +129,16 @@ class ApiService {
     return User.fromJson(userMap);
   }
 
-  Future<User> loginWithGoogle(String email, String name) async {
-    final res = await _dio.post('/api/auth/google', data: {
+  Future<User> loginWithGoogle({required String email, required String name, String? idToken}) async {
+    final body = <String, dynamic>{
       'email': email,
       'name': name,
-    });
+    };
+    if (idToken != null) {
+      body['id_token'] = idToken;
+    }
+
+    final res = await _dio.post('/api/auth/google', data: body);
     final data = res.data;
     if (data is! Map) throw Exception('Server returned an invalid response.');
     if (data['user'] == null) throw Exception(data['error'] ?? 'Google login failed');
@@ -144,10 +152,12 @@ class ApiService {
   Future<List<Product>> getProducts({
     String? category,
     String? search,
+    String? excludeSeller,
   }) async {
     final params = <String, dynamic>{};
     if (category != null && category != 'all') params['category'] = category;
     if (search != null && search.isNotEmpty) params['search'] = search;
+    if (excludeSeller != null && excludeSeller.isNotEmpty) params['exclude_seller'] = excludeSeller;
 
     final res = await _dio.get('/api/products', queryParameters: params);
     final data = res.data;
@@ -334,5 +344,52 @@ class ApiService {
     final data = res.data;
     if (data is! Map || data['user'] == null) throw Exception(data['error'] ?? 'User not found');
     return User.fromJson(Map<String, dynamic>.from(data['user'] as Map));
+  }
+}
+
+// ── Retry Interceptor for Render Cold Start ─────────────────────────────────
+class _RetryInterceptor extends Interceptor {
+  final Dio _dio;
+  static const _maxRetries = 3;
+  static const _retryHeader = 'x-retry-count';
+
+  _RetryInterceptor(this._dio);
+
+  bool _shouldRetry(DioException err) {
+    // Retry on connection errors (server sleeping)
+    if (err.type == DioExceptionType.connectionError ||
+        err.type == DioExceptionType.connectionTimeout ||
+        err.error is SocketException) {
+      return true;
+    }
+    // Retry on 502, 503, 504 (Render cold start responses)
+    final status = err.response?.statusCode;
+    if (status == 502 || status == 503 || status == 504) return true;
+    // Retry on HTML error pages (Render gateway timeout)
+    if (err.response?.data is String && (err.response!.data as String).contains('<!DOCTYPE html>')) {
+      return true;
+    }
+    return false;
+  }
+
+  @override
+  void onError(DioException err, ErrorInterceptorHandler handler) async {
+    final retryCount = int.tryParse(err.requestOptions.headers[_retryHeader]?.toString() ?? '0') ?? 0;
+
+    if (_shouldRetry(err) && retryCount < _maxRetries) {
+      final delay = Duration(seconds: 2 * (retryCount + 1)); // 2s, 4s, 6s
+      await Future.delayed(delay);
+
+      try {
+        final options = err.requestOptions;
+        options.headers[_retryHeader] = (retryCount + 1).toString();
+        final response = await _dio.fetch(options);
+        return handler.resolve(response);
+      } on DioException catch (e) {
+        return handler.next(e);
+      }
+    }
+
+    return handler.next(err);
   }
 }

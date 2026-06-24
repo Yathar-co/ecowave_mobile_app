@@ -8,6 +8,7 @@ class ProfileProvider extends ChangeNotifier {
   List<Product> _listings = [];
   List<Product> _purchases = [];
   List<Review> _reviews = [];
+  List<Map<String, dynamic>> _inquiries = [];
   ImpactStats? _impactStats;
   bool _isLoading = false;
   String? _error;
@@ -15,6 +16,7 @@ class ProfileProvider extends ChangeNotifier {
   List<Product> get listings => _listings;
   List<Product> get purchases => _purchases;
   List<Review> get reviews => _reviews;
+  List<Map<String, dynamic>> get inquiries => _inquiries;
   ImpactStats? get impactStats => _impactStats;
   bool get isLoading => _isLoading;
   String? get error => _error;
@@ -27,6 +29,7 @@ class ProfileProvider extends ChangeNotifier {
       _listings = await _api.getProductsBySeller(email);
       _purchases = await _api.getPurchasedProducts();
       _reviews = await _api.getSellerReviews(email);
+      _inquiries = await _api.getSellerInquiries();
     } catch (e) {
       _error = e.toString().replaceAll('DioException', 'Network error');
     } finally {

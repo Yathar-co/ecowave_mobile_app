@@ -187,7 +187,8 @@ def token_required(f):
             if isinstance(secret, bytes):
                 secret = secret.decode('utf-8')
 
-            data = jwt.decode(token, secret, algorithms=["HS256"])
+            # Add leeway to handle clock skew between client and server
+            data = jwt.decode(token, secret, algorithms=["HS256"], leeway=300)
             email = data.get('email')
             if not email:
                 return jsonify({'message': 'Invalid session token (no email).'}), 401
@@ -975,6 +976,17 @@ def create_inquiry():
         app.logger.error(f"Error creating inquiry: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route("/api/seller/inquiries", methods=["GET"])
+@token_required
+def get_seller_inquiries(current_user):
+    """Fetch all inquiries for products owned by the logged-in seller"""
+    try:
+        inquiries = list(inquiries_col.find({"seller_email": current_user['email']}, {"_id": 0}).sort("created_at", -1))
+        return jsonify({"success": True, "inquiries": inquiries}), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching seller inquiries: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route("/api/products/purchased", methods=["GET"])
 @token_required
 def get_purchased_products(current_user):
@@ -1017,7 +1029,11 @@ def create_review(current_user):
             return jsonify({"success": False, "error": "Product ID and rating are required"}), 400
 
         # Verify purchase
-        product = products_col.find_one({"id": product_id, "buyer_email": current_user['email'], "status": "sold"})
+        product = products_col.find_one({
+            "id": product_id,
+            "buyer_email": current_user['email'],
+            "status": {"$in": ["sold", "reserved"]}
+        })
         if not product:
             return jsonify({"success": False, "error": "You can only review items you have purchased."}), 403
 

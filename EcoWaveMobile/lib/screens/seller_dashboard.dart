@@ -105,10 +105,60 @@ class _SellerDashboardState extends State<SellerDashboard> {
               const SizedBox(height: 12),
               
               _buildReviewsList(profile),
+
+              const SizedBox(height: 24),
+              const Text('Recent Inquiries', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              
+              _buildInquiriesList(profile),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildInquiriesList(ProfileProvider profile) {
+    if (profile.inquiries.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(color: ecoCard, borderRadius: BorderRadius.circular(16), border: Border.all(color: ecoBorder)),
+        child: const Center(child: Text('No inquiries yet', style: TextStyle(color: ecoMuted))),
+      );
+    }
+
+    return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: profile.inquiries.length,
+      itemBuilder: (context, i) {
+        final inq = profile.inquiries[i];
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: ecoCard, borderRadius: BorderRadius.circular(16), border: Border.all(color: ecoBorder)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(inq['product_title'] ?? 'Product Inquiry', 
+                      style: const TextStyle(color: ecoGreenLight, fontWeight: FontWeight.bold, fontSize: 14)),
+                  Text(inq['created_at'] != null ? inq['created_at'].toString().split('T')[0] : '', 
+                      style: TextStyle(color: ecoMuted, fontSize: 11)),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text('From: ${inq['buyer_name']} (${inq['buyer_email']})', 
+                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              Text('"${inq['buyer_message']}"', 
+                  style: const TextStyle(color: Colors.white70, fontSize: 13, fontStyle: FontStyle.italic)),
+            ],
+          ),
+        );
+      },
     );
   }
 

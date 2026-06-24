@@ -67,7 +67,12 @@ class MarketplaceProvider extends ChangeNotifier {
       _cachedSearch = _searchQuery;
     } catch (e) {
       if (thisLoadId != _loadId) return;
-      _error = e.toString().replaceAll('DioException', 'Network error');
+      final errorStr = e.toString();
+      if (errorStr.contains('401') || errorStr.contains('Token has expired')) {
+        _error = 'Session expired. Please login again.';
+      } else {
+        _error = errorStr.replaceAll('DioException', 'Network error');
+      }
     } finally {
       if (thisLoadId == _loadId) {
         _isLoading = false;

@@ -187,7 +187,8 @@ def token_required(f):
             if isinstance(secret, bytes):
                 secret = secret.decode('utf-8')
 
-            data = jwt.decode(token, secret, algorithms=["HS256"])
+            # Add leeway to handle clock skew between client and server
+            data = jwt.decode(token, secret, algorithms=["HS256"], leeway=300)
             email = data.get('email')
             if not email:
                 return jsonify({'message': 'Invalid session token (no email).'}), 401
@@ -984,7 +985,11 @@ def create_review(current_user):
             return jsonify({"success": False, "error": "Product ID and rating are required"}), 400
 
         # Verify purchase
-        product = products_col.find_one({"id": product_id, "buyer_email": current_user['email'], "status": "sold"})
+        product = products_col.find_one({
+            "id": product_id,
+            "buyer_email": current_user['email'],
+            "status": {"$in": ["sold", "reserved"]}
+        })
         if not product:
             return jsonify({"success": False, "error": "You can only review items you have purchased."}), 403
 

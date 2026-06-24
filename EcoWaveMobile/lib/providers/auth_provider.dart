@@ -23,18 +23,30 @@ class AuthProvider extends ChangeNotifier {
     if (raw != null) {
       _user = User.fromJson(jsonDecode(raw) as Map<String, dynamic>);
       _api.setToken(_user?.token);
-      refreshProfile();
+      
+      // Verify if the token is still valid by making a protected call
+      try {
+        await _api.getUserImpact(); 
+        refreshProfile();
+      } catch (e) {
+        if (e.toString().contains('401') || e.toString().contains('expired')) {
+          logout(); // Token is dead, clear session
+        }
+      }
     }
   }
 
   String _handleError(dynamic e) {
     if (e is DioException) {
-      final msg = e.message ?? e.error?.toString() ?? 'An unexpected network error occurred';
       if (e.response?.statusCode == 401) {
         logout(); // Auto-logout on expired token
         return 'Session expired. Please login again.';
       }
-      return msg;
+      final data = e.response?.data;
+      if (data is Map && data.containsKey('message')) {
+        return data['message'];
+      }
+      return e.message ?? 'An unexpected network error occurred';
     }
     return e.toString();
   }

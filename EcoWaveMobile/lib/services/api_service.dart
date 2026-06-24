@@ -71,11 +71,17 @@ class ApiService {
 
   // ── Auth helper ──────────────────────────────────────────────────────────
   String? _token;
-  void setToken(String? token) => _token = token;
+  void setToken(String? token) {
+    _token = token;
+    print("ApiService: Token updated: ${token != null ? 'EXISTS' : 'NULL'}");
+  }
 
-  Options get _authOptions => Options(headers: {
-        if (_token != null) 'Authorization': 'Bearer $_token',
-      });
+  Options get _authOptions => Options(
+    headers: {
+      'Content-Type': 'application/json',
+      if (_token != null) 'Authorization': 'Bearer $_token',
+    },
+  );
 
   Future<User> login(String email, String password) async {
     final res = await _dio.post('/api/auth/login', data: {
@@ -247,6 +253,13 @@ class ApiService {
   // ── Inquiries ────────────────────────────────────────────────────────────
   Future<void> sendInquiry(InquiryRequest req) async {
     await _dio.post('/api/inquiries', data: req.toJson());
+  }
+
+  Future<List<Map<String, dynamic>>> getSellerInquiries() async {
+    final res = await _dio.get('/api/seller/inquiries', options: _authOptions);
+    final data = res.data;
+    if (data is! Map || data['inquiries'] == null) return [];
+    return List<Map<String, dynamic>>.from(data['inquiries']);
   }
 
   // ── User impact ──────────────────────────────────────────────────────────

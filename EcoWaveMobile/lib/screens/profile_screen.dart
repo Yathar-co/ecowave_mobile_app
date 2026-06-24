@@ -6,6 +6,7 @@ import '../providers/auth_provider.dart';
 import '../providers/profile_provider.dart';
 import '../screens/marketplace_screen.dart';
 import '../screens/bill_dialog.dart';
+import '../screens/report_dialog.dart';
 import '../theme/app_theme.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -210,6 +211,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       product: profile.purchases[i],
                       onReview: () => _showReviewDialog(context, profile.purchases[i]),
                       onViewBill: () => _showBill(context, profile.purchases[i].txnId),
+                      onReport: () => showDialog(
+                        context: context,
+                        builder: (_) => ReportDialog(
+                          targetId: profile.purchases[i].id,
+                          targetType: 'product',
+                          targetName: profile.purchases[i].title,
+                          txnId: profile.purchases[i].txnId,
+                        ),
+                      ),
                     ),
                   ),
               ]),
@@ -426,7 +436,13 @@ class _PurchaseCard extends StatelessWidget {
   final Product product;
   final VoidCallback onReview;
   final VoidCallback onViewBill;
-  const _PurchaseCard({required this.product, required this.onReview, required this.onViewBill});
+  final VoidCallback onReport;
+  const _PurchaseCard({
+    required this.product,
+    required this.onReview,
+    required this.onViewBill,
+    required this.onReport,
+  });
 
   @override
   Widget build(BuildContext context) => Container(
@@ -477,7 +493,7 @@ class _PurchaseCard extends StatelessWidget {
             ),
             child: const Text('Review', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           OutlinedButton(
             onPressed: onViewBill,
             style: OutlinedButton.styleFrom(
@@ -488,6 +504,18 @@ class _PurchaseCard extends StatelessWidget {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
             child: const Text('Bill', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+          const SizedBox(height: 6),
+          OutlinedButton(
+            onPressed: onReport,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: ecoError,
+              side: BorderSide(color: ecoError.withValues(alpha: 0.5)),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+              minimumSize: const Size(80, 32),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Report', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: ecoError)),
           ),
         ],
       ),

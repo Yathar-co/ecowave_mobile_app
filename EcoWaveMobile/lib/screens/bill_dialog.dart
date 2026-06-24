@@ -202,7 +202,13 @@ class BillDialog extends StatelessWidget {
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(context, ctrl.text), child: const Text('Submit', style: TextStyle(color: ecoError))),
+          TextButton(
+            onPressed: () {
+              if (ctrl.text.trim().isEmpty) return;
+              Navigator.pop(context, ctrl.text.trim());
+            },
+            child: const Text('Submit', style: TextStyle(color: ecoError)),
+          ),
         ],
       ),
     );

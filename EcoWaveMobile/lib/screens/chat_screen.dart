@@ -28,7 +28,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final user = context.read<AuthProvider>().user;
     if (user != null) {
       _chatProvider = context.read<ChatProvider>();
-      _chatProvider.init(user.email);
+      _chatProvider.init(user.email, token: user.token);
       
       // Stable Room ID: productID_buyerEmail
       // If current user is NOT the seller, they are the buyer.
@@ -200,7 +200,7 @@ class _ChatBubble extends StatelessWidget {
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.1),
+              color: Colors.black.withValues(alpha: 0.1),
               blurRadius: 4,
               offset: const Offset(0, 2),
             ),
@@ -217,7 +217,7 @@ class _ChatBubble extends StatelessWidget {
             Text(
               _formatTime(msg.createdAt),
               style: TextStyle(
-                color: Colors.white.withOpacity(0.5),
+                color: Colors.white.withValues(alpha: 0.5),
                 fontSize: 10,
               ),
             ),

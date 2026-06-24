@@ -323,6 +323,7 @@ def submit_report(current_user):
         target_type = data.get("target_type") # 'product' or 'user'
         reason = data.get("reason") # 'scam', 'fake', 'spam', etc.
         description = data.get("description", "")
+        txn_id = data.get("txn_id")
 
         if not target_id or not target_type or not reason:
             return jsonify({"success": False, "error": "Missing required fields"}), 400
@@ -343,6 +344,9 @@ def submit_report(current_user):
             query = {
                 "buyer_email": current_user['email']
             }
+            if txn_id:
+                query["txn_id"] = txn_id
+
             if target_type == 'user':
                 query["seller_email"] = target_id
             else:
@@ -361,6 +365,7 @@ def submit_report(current_user):
             "reporter_email": current_user['email'],
             "target_id": target_id,
             "target_type": target_type,
+            "txn_id": txn_id,
             "reason": reason,
             "description": description,
             "status": "pending", # pending, validated, dismissed
@@ -430,11 +435,12 @@ def validate_report(current_user, report_id):
                 return_document=True
             )
 
-            report_count = user.get('report_count', 0)
-            if report_count >= 15:
-                users_col.update_one({"email": target_email}, {"$set": {"is_banned": True, "ban_reason": "Multiple community violations"}})
-            elif report_count % 5 == 0:
-                users_col.update_one({"email": target_email}, {"$set": {"is_banned": True, "ban_reason": f"Temporary suspension due to {report_count} validated reports"}})
+            if user:
+                report_count = user.get('report_count', 0)
+                if report_count >= 15:
+                    users_col.update_one({"email": target_email}, {"$set": {"is_banned": True, "ban_reason": "Multiple community violations"}})
+                elif report_count % 5 == 0 and report_count > 0:
+                    users_col.update_one({"email": target_email}, {"$set": {"is_banned": True, "ban_reason": f"Temporary suspension due to {report_count} validated reports"}})
 
         return jsonify({"success": True, "message": "Report validated"}), 200
     except Exception as e:
@@ -630,11 +636,11 @@ def api_auth_register():
         if password != confirm_password:
             return jsonify({"success": False, "error": "Passwords do not match"}), 400
 
+        if email == "admin@ecowave.com":
+            return jsonify({"success": False, "error": "This email address is reserved"}), 400
+
         existing_user = users_col.find_one({"email": email})
         if existing_user:
-            # If they have a password, they can't "re-register" but they can login.
-            # If they are Google-only, we suggest OAuth, but we don't strictly block manual creation if we wanted to allow "upgrading" to password.
-            # For now, just allow standard "Email already registered" unless it's strictly a provider mismatch.
             return jsonify({"success": False, "error": "Email already registered"}), 400
 
         now = datetime.utcnow()
@@ -831,10 +837,12 @@ def get_products():
         # Filter by Search Text (title, description, AND category)
         search = request.args.get("search")
         if search:
+            # Escape regex special chars to prevent ReDoS
+            escaped_search = re.escape(search[:100])  # cap at 100 chars
             query["$or"] = [
-                {"title": {"$regex": search, "$options": "i"}},
-                {"description": {"$regex": search, "$options": "i"}},
-                {"category": {"$regex": search, "$options": "i"}}
+                {"title": {"$regex": escaped_search, "$options": "i"}},
+                {"description": {"$regex": escaped_search, "$options": "i"}},
+                {"category": {"$regex": escaped_search, "$options": "i"}}
             ]
 
         products = list(products_col.find(query, {"_id": 0}).sort("created_at", -1))
@@ -886,9 +894,16 @@ def create_product(current_user):
         # Validate required fields
         required_fields = ["title", "description", "price", "badge", "image"]
         for field in required_fields:
-            if field not in data:
-                return jsonify({"success": False, "error": f"Missing field: {field}"}), 400
-        
+            if field not in data or (isinstance(data[field], str) and not str(data[field]).strip()):
+                return jsonify({"success": False, "error": f"Missing or empty field: {field}"}), 400
+
+        try:
+            price_val = float(data["price"])
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Price must be a valid number"}), 400
+        if price_val <= 0:
+            return jsonify({"success": False, "error": "Price must be greater than 0"}), 400
+
         product_id = str(uuid.uuid4())
         
         product = {
@@ -1025,8 +1040,15 @@ def create_review(current_user):
         rating = data.get("rating")
         comment = data.get("comment", "")
 
-        if not product_id or not rating:
+        if not product_id or rating is None:
             return jsonify({"success": False, "error": "Product ID and rating are required"}), 400
+
+        try:
+            rating_val = float(rating)
+            if not (1.0 <= rating_val <= 5.0):
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Rating must be a number between 1 and 5"}), 400
 
         # Verify purchase
         product = products_col.find_one({
@@ -1149,6 +1171,14 @@ def delete_product(current_user, product_id):
         # Verify ownership
         if product.get("seller_email") != current_user["email"] and current_user.get("email") != "admin@ecowave.com":
             return jsonify({"success": False, "error": "Unauthorized to delete this listing"}), 403
+
+        # Block deletion if an active transaction exists
+        active_txn = transactions_col.find_one({
+            "product_id": product_id,
+            "status": {"$in": ["initiated", "pending_shipping", "awaiting_delivery", "final_paid", "shipped"]}
+        })
+        if active_txn:
+            return jsonify({"success": False, "error": "Cannot delete a listing with an active transaction in progress"}), 400
 
         # Delete product
         products_col.delete_one({"id": product_id})
@@ -1408,19 +1438,36 @@ def confirm_delivery(current_user):
 
         # Credit Eco Impact
         product = products_col.find_one({"id": product_id})
-        impact = product.get("eco_impact", {})
+        impact = product.get("eco_impact", {}) if product else {}
 
-        # Update seller stats
-        seller_email = product.get("seller_email")
+        seller_email = product.get("seller_email") if product else None
+        buyer_email_del = txn.get("buyer_email")
+
+        # Update seller impact_stats and sales_count
         if seller_email:
             users_col.update_one(
                 {"email": seller_email},
                 {
                     "$inc": {
-                        "stats.items_sold": 1,
-                        "stats.co2_saved": impact.get("co2", 0),
-                        "stats.water_saved": impact.get("water", 0),
-                        "stats.waste_saved": impact.get("waste", 0)
+                        "sales_count": 1,
+                        "impact_stats.items_recycled": 1,
+                        "impact_stats.co2_saved": impact.get("co2", 0),
+                        "impact_stats.water_saved": impact.get("water", 0),
+                        "impact_stats.waste_saved": impact.get("waste", 0)
+                    }
+                }
+            )
+
+        # Update buyer impact_stats
+        if buyer_email_del:
+            users_col.update_one(
+                {"email": buyer_email_del},
+                {
+                    "$inc": {
+                        "impact_stats.items_purchased": 1,
+                        "impact_stats.co2_saved": impact.get("co2", 0),
+                        "impact_stats.water_saved": impact.get("water", 0),
+                        "impact_stats.waste_saved": impact.get("waste", 0)
                     }
                 }
             )
@@ -1451,10 +1498,10 @@ def dispute_transaction(current_user):
             }}
         )
 
-        # Return product to 'available' if payment was only partial or disputed
+        # Return product to marketplace as active
         products_col.update_one(
             {"id": txn.get("product_id")},
-            {"$set": {"status": "available", "buyer_email": None, "txn_id": None}}
+            {"$set": {"status": "active"}, "$unset": {"buyer_email": "", "txn_id": ""}}
         )
 
         # Add to seller's "To Answer" list for their dashboard
@@ -1493,8 +1540,26 @@ def get_bill(current_user, txn_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 # Chat Socket Events
+def _verify_socket_token():
+    """Extract and verify JWT from socket query string. Returns email or None."""
+    token = request.args.get('token')
+    if not token:
+        return None
+    try:
+        secret = app.secret_key
+        if isinstance(secret, bytes):
+            secret = secret.decode('utf-8')
+        data = jwt.decode(token, secret, algorithms=["HS256"], leeway=300)
+        return data.get('email')
+    except Exception:
+        return None
+
 @socketio.on('join')
 def on_join(data):
+    authenticated_email = _verify_socket_token()
+    if not authenticated_email:
+        emit('error', {'message': 'Authentication required to join chat'})
+        return
     room = data['room']
     join_room(room)
     # Fetch previous messages
@@ -1503,8 +1568,18 @@ def on_join(data):
 
 @socketio.on('message')
 def handle_message(data):
+    authenticated_email = _verify_socket_token()
+    if not authenticated_email:
+        return  # Silently drop unauthenticated messages
+
     room = data['room']
     sender_email = data['sender']
+
+    # Verify sender matches authenticated user
+    if sender_email != authenticated_email:
+        emit('error', {'message': 'Sender identity mismatch'})
+        return
+
     text = data['text']
     msg_id = data.get('msg_id', str(uuid.uuid4()))  # Client-generated or fallback
 
@@ -1521,11 +1596,11 @@ def handle_message(data):
 
     # Send email notification to the other party
     try:
-        # room format: productID_buyerEmail
-        parts = room.split('_')
-        if len(parts) >= 2:
-            product_id = parts[0]
-            buyer_email = parts[1]
+        # room format: productID_buyerEmail — split at first underscore only
+        underscore_idx = room.find('_')
+        if underscore_idx > 0:
+            product_id = room[:underscore_idx]
+            buyer_email = room[underscore_idx + 1:]
 
             product = products_col.find_one({"id": product_id})
             if product:
@@ -1535,16 +1610,76 @@ def handle_message(data):
                 # Determine recipient (if sender is buyer, recipient is seller, and vice versa)
                 recipient_email = seller_email if sender_email == buyer_email else buyer_email
 
-                # We don't want to spam emails for every single message in a fast chat.
-                # Only send if the last message in this room was more than 5 minutes ago
-                # or if there are fewer than 2 messages (start of conversation).
                 msg_count = messages_col.count_documents({"room": room})
-
                 if msg_count <= 2:
                     # New conversation, definitely send
                     send_chat_notification_email(recipient_email, sender_email, text, product_title)
     except Exception as e:
         app.logger.error(f"Error in chat email notification: {e}")
+
+@app.route("/api/chat/conversations", methods=["GET"])
+@token_required
+def get_conversations(current_user):
+    """Return all chat conversations the current user participates in."""
+    try:
+        email = current_user['email']
+
+        # Rooms where user sent at least one message
+        sender_rooms = set(messages_col.distinct("room", {"sender": email}))
+
+        # Rooms where user is the buyer (room format: productId_buyerEmail)
+        buyer_rooms = set(messages_col.distinct(
+            "room", {"room": {"$regex": f"_{re.escape(email)}$"}}
+        ))
+
+        all_rooms = sender_rooms | buyer_rooms
+
+        conversations = []
+        for room in all_rooms:
+            last_msg = messages_col.find_one(
+                {"room": room},
+                {"_id": 0, "text": 1, "sender": 1, "created_at": 1},
+                sort=[("created_at", -1)]
+            )
+            if not last_msg:
+                continue
+
+            underscore_idx = room.find('_')
+            if underscore_idx <= 0:
+                continue
+            product_id = room[:underscore_idx]
+            buyer_email = room[underscore_idx + 1:]
+
+            product = products_col.find_one(
+                {"id": product_id},
+                {"_id": 0, "title": 1, "image": 1, "seller_email": 1}
+            )
+            if not product:
+                continue
+
+            seller_email = product.get("seller_email", "")
+            is_seller = (seller_email == email)
+            other_party = buyer_email if is_seller else seller_email
+
+            conversations.append({
+                "room": room,
+                "product_id": product_id,
+                "product_title": product.get("title", "Unknown"),
+                "product_image": product.get("image", ""),
+                "seller_email": seller_email,
+                "buyer_email": buyer_email,
+                "other_party": other_party,
+                "is_seller": is_seller,
+                "last_message": last_msg.get("text", ""),
+                "last_message_sender": last_msg.get("sender", ""),
+                "last_message_at": str(last_msg.get("created_at", ""))
+            })
+
+        conversations.sort(key=lambda x: x.get("last_message_at", ""), reverse=True)
+        return jsonify({"success": True, "conversations": conversations}), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching conversations: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/seller/mark-shipped", methods=["POST"])
 @token_required
@@ -1593,4 +1728,4 @@ def mark_as_shipped(current_user):
 
 if __name__ == "__main__":
     # Python 3.13 + eventlet is unstable. Using standard Flask runner.
-    app.run(host="0.0.0.0", port=PORT, debug=True)
+    app.run(host="0.0.0.0", port=PORT, debug=False)

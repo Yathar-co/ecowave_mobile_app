@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
 import '../providers/auth_provider.dart';
 import '../providers/profile_provider.dart';
-import '../models/models.dart';
 
 class SellerDashboard extends StatefulWidget {
   const SellerDashboard({super.key});
@@ -200,17 +199,17 @@ class _SellerDashboardState extends State<SellerDashboard> {
                 onPressed: profile.isLoading 
                   ? null 
                   : () async {
+                      final messenger = ScaffoldMessenger.of(context);
                       await profile.markAsShipped(item.txnId!);
-                      if (mounted) {
-                        if (profile.error != null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(profile.error!), backgroundColor: ecoError),
-                          );
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Item marked as shipped!'), backgroundColor: ecoGreen),
-                          );
-                        }
+                      if (!mounted) return;
+                      if (profile.error != null) {
+                        messenger.showSnackBar(
+                          SnackBar(content: Text(profile.error!), backgroundColor: ecoError),
+                        );
+                      } else {
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('Item marked as shipped!'), backgroundColor: ecoGreen),
+                        );
                       }
                     },
                 style: ElevatedButton.styleFrom(

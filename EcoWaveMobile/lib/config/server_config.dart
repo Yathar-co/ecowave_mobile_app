@@ -1,6 +1,3 @@
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb, kReleaseMode;
-
 /// 🔧 Live production backend URL on Render
 const String _productionUrl = 'https://ecowavemobile-y4aq.onrender.com';
 

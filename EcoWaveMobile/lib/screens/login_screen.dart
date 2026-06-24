@@ -28,8 +28,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _submit() async {
     final email = _emailCtrl.text.trim();
-    final pass = _passCtrl.text.trim();
-    
+    final pass = _passCtrl.text;
+
     if (email.isEmpty || pass.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter email and password')),
@@ -275,21 +275,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
-    if (_passCtrl.text.trim().length < 6) {
+    if (_passCtrl.text.length < 6) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Password must be at least 6 characters'), backgroundColor: ecoError),
       );
       return;
     }
 
+    if (_passCtrl.text != _confirmPassCtrl.text) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Passwords do not match'), backgroundColor: ecoError),
+      );
+      return;
+    }
+
     setState(() => _loading = true);
-    
+
     try {
       await context.read<AuthProvider>().register(
             email: email,
             username: _userCtrl.text.trim(),
-            password: _passCtrl.text.trim(),
-            confirmPassword: _confirmPassCtrl.text.trim(),
+            password: _passCtrl.text,
+            confirmPassword: _confirmPassCtrl.text,
           );
       if (mounted) {
         context.go('/marketplace');
@@ -375,12 +382,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             controller: _passCtrl,
                             label: 'Password',
                             obscureText: _obscure,
+                            suffixIcon: IconButton(
+                              icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, color: ecoMuted),
+                              onPressed: () => setState(() => _obscure = !_obscure),
+                            ),
                           ),
                           const SizedBox(height: 16),
                           _EcoField(
                             controller: _confirmPassCtrl,
                             label: 'Confirm Password',
                             obscureText: _obscure,
+                            suffixIcon: IconButton(
+                              icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, color: ecoMuted),
+                              onPressed: () => setState(() => _obscure = !_obscure),
+                            ),
                           ),
                           const SizedBox(height: 24),
                           SizedBox(

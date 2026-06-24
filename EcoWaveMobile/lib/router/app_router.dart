@@ -8,6 +8,7 @@ import '../screens/marketplace_screen.dart';
 import '../screens/sell_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/chat_screen.dart';
+import '../screens/chats_list_screen.dart';
 import '../screens/map_screen.dart';
 import '../screens/admin_dashboard.dart';
 import '../screens/seller_dashboard.dart';
@@ -30,7 +31,7 @@ class AppRouter {
           }
 
           // Protect routes
-          final protected = ['/sell', '/profile', '/admin'];
+          final protected = ['/sell', '/profile', '/messages', '/admin'];
           if (!loggedIn && protected.contains(state.matchedLocation)) {
             return '/login';
           }
@@ -67,6 +68,10 @@ class AppRouter {
                 builder: (_, __) => const SellScreen(),
               ),
               GoRoute(
+                path: '/messages',
+                builder: (_, __) => const ChatsListScreen(),
+              ),
+              GoRoute(
                 path: '/profile',
                 builder: (_, __) => const ProfileScreen(),
               ),
@@ -74,7 +79,17 @@ class AppRouter {
           ),
           GoRoute(
             path: '/chat',
-            builder: (context, state) => ChatScreen(product: state.extra as Product),
+            builder: (context, state) {
+              final extra = state.extra;
+              if (extra is Product) {
+                return ChatScreen(product: extra);
+              }
+              final map = extra as Map<String, dynamic>;
+              return ChatScreen(
+                product: map['product'] as Product,
+                buyerEmail: map['buyerEmail'] as String?,
+              );
+            },
           ),
           GoRoute(
             path: '/map',
@@ -99,7 +114,8 @@ class _MainShell extends StatelessWidget {
   int _indexFor(BuildContext context) {
     final loc = GoRouterState.of(context).matchedLocation;
     if (loc.startsWith('/sell')) return 1;
-    if (loc.startsWith('/profile')) return 2;
+    if (loc.startsWith('/messages')) return 2;
+    if (loc.startsWith('/profile')) return 3;
     return 0;
   }
 
@@ -124,6 +140,8 @@ class _MainShell extends StatelessWidget {
                 case 1:
                   context.go('/sell');
                 case 2:
+                  context.go('/messages');
+                case 3:
                   context.go('/profile');
               }
             },
@@ -137,6 +155,11 @@ class _MainShell extends StatelessWidget {
                 icon: Icon(Icons.add_circle_outline),
                 selectedIcon: Icon(Icons.add_circle, color: ecoGreenLight),
                 label: 'Sell',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.chat_bubble_outline),
+                selectedIcon: Icon(Icons.chat_bubble, color: ecoGreenLight),
+                label: 'Messages',
               ),
               NavigationDestination(
                 icon: Icon(Icons.person_outline),

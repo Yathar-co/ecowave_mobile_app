@@ -6,12 +6,14 @@ class ReportDialog extends StatefulWidget {
   final String targetId;
   final String targetType;
   final String targetName;
+  final String? txnId;
 
   const ReportDialog({
     super.key,
     required this.targetId,
     required this.targetType,
     required this.targetName,
+    this.txnId,
   });
 
   @override
@@ -49,6 +51,7 @@ class _ReportDialogState extends State<ReportDialog> {
         targetType: widget.targetType,
         reason: _selectedReason!,
         description: _descCtrl.text,
+        txnId: widget.txnId,
       );
       if (mounted) {
         Navigator.pop(context);

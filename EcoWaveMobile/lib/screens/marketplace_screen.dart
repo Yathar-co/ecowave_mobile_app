@@ -320,13 +320,61 @@ class _ProductCard extends StatelessWidget {
                             fontWeight: FontWeight.w800,
                             fontSize: 16)),
                     const Spacer(),
-                    if (product.ecoImpact != null)
-                      Row(children: [
-                        const Text('🌿', style: TextStyle(fontSize: 10)),
-                        const SizedBox(width: 3),
-                        Text('${product.ecoImpact!.co2.toInt()}kg CO₂',
-                            style: TextStyle(color: ecoMuted, fontSize: 10)),
-                      ]),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        if (product.ecoImpact != null)
+                          Row(children: [
+                            const Text('🌿', style: TextStyle(fontSize: 10)),
+                            const SizedBox(width: 3),
+                            Text('${product.ecoImpact!.co2.toInt()}kg CO₂',
+                                style: TextStyle(color: ecoMuted, fontSize: 10)),
+                          ])
+                        else
+                          const SizedBox.shrink(),
+                        GestureDetector(
+                          onTap: () {
+                            final user = context.read<AuthProvider>().user;
+                            if (user == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Please log in to message sellers'),
+                                  backgroundColor: ecoError,
+                                ),
+                              );
+                              return;
+                            }
+                            context.push('/chat', extra: product);
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: ecoGreen.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: ecoGreen.withValues(alpha: 0.3)),
+                            ),
+                            child: const Row(
+                              children: [
+                                Icon(
+                                  Icons.chat_bubble_outline,
+                                  size: 12,
+                                  color: ecoGreenLight,
+                                ),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Chat',
+                                  style: TextStyle(
+                                    color: ecoGreenLight,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -384,7 +432,14 @@ class _ProductDetailSheetState extends State<ProductDetailSheet> {
     final product = widget.product;
     final user = context.read<AuthProvider>().user;
 
-    if (user?.email == product.sellerEmail) {
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please log in to make a purchase'), backgroundColor: ecoError),
+      );
+      return;
+    }
+
+    if (user.email == product.sellerEmail) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('⚠️ You cannot buy your own product'), backgroundColor: ecoError),
       );
@@ -407,7 +462,7 @@ class _ProductDetailSheetState extends State<ProductDetailSheet> {
       ),
       builder: (_) => _UpiCheckoutSheet(
         product: product,
-        buyerEmail: user?.email ?? '',
+        buyerEmail: user.email,
       ),
     );
 
@@ -433,78 +488,115 @@ class _ProductDetailSheetState extends State<ProductDetailSheet> {
       minChildSize: 0.5,
       maxChildSize: 0.95,
       expand: false,
-      builder: (_, ctrl) => ListView(
-        controller: ctrl,
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+      builder: (_, ctrl) => Column(
         children: [
-          Center(child: Container(width: 40, height: 4,
-            decoration: BoxDecoration(color: ecoBorder, borderRadius: BorderRadius.circular(2)))),
-          const SizedBox(height: 12),
-          ClipRRect(borderRadius: BorderRadius.circular(16),
-            child: SizedBox(height: 220, child: ProductImage(image: product.image))),
-          const SizedBox(height: 16),
-          Text(product.title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 22)),
-          const SizedBox(height: 6),
-          Text('₹${product.price.toStringAsFixed(0)}', style: const TextStyle(color: ecoGreenLight, fontWeight: FontWeight.w900, fontSize: 26)),
-          if (product.ecoImpact != null) ...[
-            const SizedBox(height: 12),
-            Wrap(spacing: 8, runSpacing: 6, children: [
-              _ImpactBadge('🌿 ${product.ecoImpact!.co2.toInt()}kg CO₂'),
-              _ImpactBadge('💧 ${product.ecoImpact!.water.toInt()}L Water'),
-              _ImpactBadge('♻️ ${product.ecoImpact!.waste}kg Waste'),
-            ]),
-          ],
-          const SizedBox(height: 16),
-          const Text('Description', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
-          const SizedBox(height: 6),
-          Text(product.description, style: TextStyle(color: ecoMuted, fontSize: 14, height: 1.6)),
-          
-          // --- Seller Info Section ---
-          const SizedBox(height: 24),
-          const Text('Seller Information', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
-          const SizedBox(height: 12),
-          _SellerTrustCard(sellerEmail: product.sellerEmail, sellerName: product.sellerId),
-
-          if (product.sellerLocation.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Row(children: [
-              Text('📍 ${product.sellerLocation}', style: TextStyle(color: ecoMuted, fontSize: 13)),
-              if (product.location != null) ...[
-                const Spacer(),
+          Expanded(
+            child: ListView(
+              controller: ctrl,
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+              children: [
+                Center(child: Container(width: 40, height: 4,
+                  decoration: BoxDecoration(color: ecoBorder, borderRadius: BorderRadius.circular(2)))),
+                const SizedBox(height: 12),
+                ClipRRect(borderRadius: BorderRadius.circular(16),
+                  child: SizedBox(height: 220, child: ProductImage(image: product.image))),
+                const SizedBox(height: 16),
+                Text(product.title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 22)),
+                const SizedBox(height: 6),
+                Text('₹${product.price.toStringAsFixed(0)}', style: const TextStyle(color: ecoGreenLight, fontWeight: FontWeight.w900, fontSize: 26)),
+                if (product.ecoImpact != null) ...[
+                  const SizedBox(height: 12),
+                  Wrap(spacing: 8, runSpacing: 6, children: [
+                    _ImpactBadge('🌿 ${product.ecoImpact!.co2.toInt()}kg CO₂'),
+                    _ImpactBadge('💧 ${product.ecoImpact!.water.toInt()}L Water'),
+                    _ImpactBadge('♻️ ${product.ecoImpact!.waste}kg Waste'),
+                  ]),
+                ],
+                const SizedBox(height: 16),
+                const Text('Description', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
+                const SizedBox(height: 6),
+                Text(product.description, style: TextStyle(color: ecoMuted, fontSize: 14, height: 1.6)),
+                const SizedBox(height: 24),
+                const Text('Seller Information', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
+                const SizedBox(height: 12),
+                _SellerTrustCard(sellerEmail: product.sellerEmail, sellerName: product.sellerId),
+                if (product.sellerLocation.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    Text('📍 ${product.sellerLocation}', style: TextStyle(color: ecoMuted, fontSize: 13)),
+                    if (product.location != null) ...[
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: () => context.push('/map', extra: product),
+                        icon: const Icon(Icons.map, size: 16, color: ecoGreenLight),
+                        label: const Text('View Map', style: TextStyle(color: ecoGreenLight, fontSize: 12)),
+                      ),
+                    ],
+                  ]),
+                ],
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+          // Sticky action bar — always visible regardless of scroll position
+          Container(
+            padding: EdgeInsets.fromLTRB(
+              20, 12, 20,
+              MediaQuery.of(context).padding.bottom + 12,
+            ),
+            decoration: BoxDecoration(
+              color: ecoSurface,
+              border: Border(top: BorderSide(color: ecoBorder)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(children: [
+                  Expanded(child: SizedBox(height: 50, child: DecoratedBox(
+                    decoration: BoxDecoration(gradient: ecoGreenGradient, borderRadius: BorderRadius.circular(14)),
+                    child: TextButton(
+                      onPressed: _startPayment,
+                      child: const Text('Buy Now', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                    ),
+                  ))),
+                  const SizedBox(width: 12),
+                  Expanded(child: SizedBox(height: 50, child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: ecoGreen),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      context.push('/chat', extra: product);
+                    },
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.chat_bubble_outline, size: 16, color: ecoGreenLight),
+                        SizedBox(width: 6),
+                        Text('Message', style: TextStyle(color: ecoGreenLight)),
+                      ],
+                    ),
+                  ))),
+                ]),
+                const SizedBox(height: 4),
                 TextButton.icon(
-                  onPressed: () => context.push('/map', extra: product),
-                  icon: const Icon(Icons.map, size: 16, color: ecoGreenLight),
-                  label: const Text('View Map', style: TextStyle(color: ecoGreenLight, fontSize: 12)),
+                  onPressed: () => showDialog(
+                    context: context,
+                    builder: (_) => ReportDialog(
+                      targetId: product.id,
+                      targetType: 'product',
+                      targetName: product.title,
+                    ),
+                  ),
+                  icon: const Icon(Icons.report_problem_outlined, size: 14, color: ecoError),
+                  label: const Text('Report this listing', style: TextStyle(color: ecoError, fontSize: 12)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    minimumSize: Size.zero,
+                  ),
                 ),
               ],
-            ]),
-          ],
-          const SizedBox(height: 24),
-          Row(children: [
-            Expanded(child: SizedBox(height: 50, child: DecoratedBox(
-              decoration: BoxDecoration(gradient: ecoGreenGradient, borderRadius: BorderRadius.circular(14)),
-              child: TextButton(onPressed: _startPayment,
-                child: const Text('Buy Now', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)))))),
-            const SizedBox(width: 12),
-            Expanded(child: SizedBox(height: 50, child: OutlinedButton(
-              style: OutlinedButton.styleFrom(side: const BorderSide(color: ecoGreen),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-              onPressed: () { Navigator.pop(context); context.push('/chat', extra: product); },
-              child: const Text('Chat', style: TextStyle(color: ecoGreenLight))))),
-          ]),
-          const SizedBox(height: 16),
-          Center(
-            child: TextButton.icon(
-              onPressed: () => showDialog(
-                context: context,
-                builder: (_) => ReportDialog(
-                  targetId: product.id,
-                  targetType: 'product',
-                  targetName: product.title,
-                ),
-              ),
-              icon: const Icon(Icons.report_problem_outlined, size: 16, color: ecoError),
-              label: const Text('Report this listing', style: TextStyle(color: ecoError, fontSize: 12)),
             ),
           ),
         ],

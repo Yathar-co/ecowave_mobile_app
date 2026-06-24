@@ -96,9 +96,17 @@ class _SellScreenState extends State<SellScreen> {
       return;
     }
 
-    if (!_hasImage || _titleCtrl.text.isEmpty || _priceCtrl.text.isEmpty || _category.isEmpty || _material.isEmpty || _condition.isEmpty) {
+    if (!_hasImage || _titleCtrl.text.isEmpty || _descCtrl.text.isEmpty || _priceCtrl.text.isEmpty || _category.isEmpty || _material.isEmpty || _condition.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('⚠️ Please fill in all required fields (Category, Material, Condition) and add a photo')),
+        const SnackBar(content: Text('⚠️ Please fill in all required fields (Title, Description, Category, Material, Condition) and add a photo')),
+      );
+      return;
+    }
+
+    final parsedPrice = double.tryParse(_priceCtrl.text);
+    if (parsedPrice == null || parsedPrice <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Price must be greater than ₹0'), backgroundColor: ecoError),
       );
       return;
     }
@@ -144,13 +152,16 @@ class _SellScreenState extends State<SellScreen> {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     final sell = context.watch<SellProvider>();
-    final canSubmit = auth.isLoggedIn && 
-        _hasImage && 
-        _titleCtrl.text.isNotEmpty && 
-        _priceCtrl.text.isNotEmpty && 
-        _category.isNotEmpty && 
-        _material.isNotEmpty && 
-        _condition.isNotEmpty && 
+    final parsedPriceCheck = double.tryParse(_priceCtrl.text);
+    final canSubmit = auth.isLoggedIn &&
+        _hasImage &&
+        _titleCtrl.text.isNotEmpty &&
+        _descCtrl.text.isNotEmpty &&
+        _priceCtrl.text.isNotEmpty &&
+        (parsedPriceCheck != null && parsedPriceCheck > 0) &&
+        _category.isNotEmpty &&
+        _material.isNotEmpty &&
+        _condition.isNotEmpty &&
         !sell.isLoading;
 
     return Scaffold(

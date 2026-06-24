@@ -20,18 +20,19 @@ class ChatProvider extends ChangeNotifier {
   List<ChatMessage> get messages => _messages;
   bool get isConnected => _isConnected;
 
-  void init(String userEmail) {
+  void init(String userEmail, {String? token}) {
     if (_socket != null && _currentUserEmail == userEmail) return;
-    
+
     _currentUserEmail = userEmail;
-    
+
     _socket?.dispose();
-    _socket = socket_io.io(serverUrl, 
-      socket_io.OptionBuilder()
+    final opts = socket_io.OptionBuilder()
         .setTransports(['websocket'])
-        .enableAutoConnect()
-        .build()
-    );
+        .enableAutoConnect();
+    if (token != null && token.isNotEmpty) {
+      opts.setQuery({'token': token});
+    }
+    _socket = socket_io.io(serverUrl, opts.build());
 
     _socket!.onConnect((_) {
       _isConnected = true;

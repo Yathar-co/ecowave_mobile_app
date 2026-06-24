@@ -1,3 +1,4 @@
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'package:dio/dio.dart';
 import '../models/models.dart';
@@ -73,7 +74,7 @@ class ApiService {
   String? _token;
   void setToken(String? token) {
     _token = token;
-    print("ApiService: Token updated: ${token != null ? 'EXISTS' : 'NULL'}");
+    developer.log("ApiService: Token updated: ${token != null ? 'EXISTS' : 'NULL'}");
   }
 
   Options get _authOptions => Options(
@@ -95,7 +96,7 @@ class ApiService {
     }
     if (data is! Map) {
       // Log the unexpected response for debugging
-      print('Unexpected Server Response (Login): $data');
+      developer.log('Unexpected Server Response (Login): $data');
       throw Exception('Server returned an invalid format. Please try again.');
     }
     
@@ -124,7 +125,7 @@ class ApiService {
       throw Exception('Server is temporarily unavailable. Please try again in 30 seconds.');
     }
     if (data is! Map) {
-      print('Unexpected Server Response (Register): $data');
+      developer.log('Unexpected Server Response (Register): $data');
       throw Exception('Invalid server response. Please try again.');
     }
 
@@ -340,6 +341,7 @@ class ApiService {
     required String targetType,
     required String reason,
     String description = '',
+    String? txnId,
   }) async {
     await _dio.post('/api/reports',
         data: {
@@ -347,8 +349,17 @@ class ApiService {
           'target_type': targetType,
           'reason': reason,
           'description': description,
+          if (txnId != null) 'txn_id': txnId,
         },
         options: _authOptions);
+  }
+
+  // ── Chat conversations ───────────────────────────────────────────────────────
+  Future<List<Map<String, dynamic>>> getConversations() async {
+    final res = await _dio.get('/api/chat/conversations', options: _authOptions);
+    final data = res.data;
+    if (data is! Map || data['conversations'] == null) return [];
+    return List<Map<String, dynamic>>.from(data['conversations'] as List);
   }
 
   // ── User Profiles ────────────────────────────────────────────────────────

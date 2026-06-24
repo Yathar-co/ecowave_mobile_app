@@ -11,3 +11,4 @@ python-dateutil
 certifi
 gunicorn
 google-auth
+google-api-python-client

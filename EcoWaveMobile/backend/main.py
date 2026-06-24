@@ -258,11 +258,24 @@ def create_jwt_for_user(user_doc: dict) -> str:
 def upsert_oauth_user(email: str, name: str = None, provider: str = "google", extra: dict = None) -> dict:
     query = {"email": email}
     now = datetime.utcnow()
+
+    # Check if user already exists to preserve fields
+    existing_user = users_col.find_one(query)
+
+    # Determine user_id: preserve existing one if present, else fallback to name or email prefix
+    if existing_user and existing_user.get("user_id"):
+        user_id = existing_user["user_id"]
+    elif existing_user and existing_user.get("username"):
+        user_id = existing_user["username"]
+    else:
+        user_id = name or email.split("@")[0]
+
     update = {
         "$set": {
-            "username": name,
+            "username": name or user_id,
             "email": email,
-            "name": name,
+            "name": name or user_id,
+            "user_id": user_id,
             "provider": provider,
             "updated_at": now
         },
@@ -290,7 +303,6 @@ def upsert_oauth_user(email: str, name: str = None, provider: str = "google", ex
         return_document=True
     )
     if user:
-        user["user_id"] = user.get("username")
         user.pop("_id", None)
     return user
 
@@ -543,6 +555,9 @@ def api_auth_google():
     id_token_str = data.get("id_token")
     google_client_id = os.getenv("GOOGLE_CLIENT_ID")
 
+    email = None
+    name = None
+
     # If ID token is provided, verify it server-side
     if id_token_str and GOOGLE_AUTH_AVAILABLE and google_client_id:
         try:
@@ -553,21 +568,30 @@ def api_auth_google():
             )
             email = idinfo.get("email")
             name = idinfo.get("name") or idinfo.get("given_name") or (email.split("@")[0] if email else None)
+
             if not email:
                 return jsonify({"success": False, "error": "No email in Google token"}), 400
             if not idinfo.get("email_verified"):
                 return jsonify({"success": False, "error": "Google email not verified"}), 400
         except ValueError as e:
             app.logger.warning(f"Google ID token verification failed: {e}")
-            return jsonify({"success": False, "error": "Invalid Google token"}), 401
+            # Try to provide a more helpful error message
+            error_msg = str(e)
+            if "Token used too early" in error_msg:
+                return jsonify({"success": False, "error": "Google token used too early. Check server time."}), 401
+            return jsonify({"success": False, "error": f"Invalid Google token: {error_msg}"}), 401
     else:
         # Fallback: accept email+name directly (for dev or when google-auth not installed)
         email = data.get("email")
         name = data.get("name", email.split("@")[0] if email else "")
+
         if not email:
             return jsonify({"success": False, "error": "Email or id_token is required"}), 400
+
         if not GOOGLE_AUTH_AVAILABLE:
             app.logger.warning("google-auth not installed; accepting unverified Google login")
+        elif not google_client_id:
+            app.logger.warning("GOOGLE_CLIENT_ID not set; accepting unverified Google login")
 
     # Securely upsert user (create if not exists)
     user = upsert_oauth_user(email=email, name=name, provider="google")
@@ -605,11 +629,20 @@ def api_auth_register():
         if password != confirm_password:
             return jsonify({"success": False, "error": "Passwords do not match"}), 400
 
-        if users_col.find_one({"email": email}):
+        existing_user = users_col.find_one({"email": email})
+        if existing_user:
+            # Narrowly block only if the existing account is strictly Google-only
+            if existing_user.get("provider") == "google" and not existing_user.get("password"):
+                return jsonify({
+                    "success": False,
+                    "error": "This email is already linked with Google. Please 'Continue with Google' or use password reset if you want to set a password."
+                }), 400
             return jsonify({"success": False, "error": "Email already registered"}), 400
 
         now = datetime.utcnow()
+        user_id = username # Use username as user_id for new manual registrations
         user_doc = {
+            "user_id": user_id,
             "email": email,
             "username": username,
             "name": username,
@@ -630,7 +663,6 @@ def api_auth_register():
         }
 
         users_col.insert_one(user_doc)
-        user_doc["user_id"] = username
         jwt_token = create_jwt_for_user(user_doc)
 
         return jsonify({
@@ -668,7 +700,10 @@ def api_auth_login():
     if not check_password_hash(user["password"], password):
         return jsonify({"success": False, "error": "Invalid email or password"}), 401
 
-    user["user_id"] = user.get("username", user.get("name", email.split("@")[0]))
+    if not user.get("user_id"):
+        user["user_id"] = user.get("username", user.get("name", email.split("@")[0]))
+        users_col.update_one({"email": email}, {"$set": {"user_id": user["user_id"]}})
+
     jwt_token = create_jwt_for_user(user)
     
     return jsonify({

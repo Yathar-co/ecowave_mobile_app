@@ -860,12 +860,15 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
   String _buildUpiUrl(String txnId) {
     final p = widget.product;
     final amount = (p.price * 0.3).toStringAsFixed(2); // Initial 30% stage
+    
+    // Simplified URI for better compatibility with GPay/PhonePe on personal VPAs.
+    // Removing 'tr' (transaction reference) and 'mc' to avoid "bank limit" or "merchant only" errors.
     return 'upi://pay?pa=${Uri.encodeComponent(p.sellerUpiId)}'
         '&pn=${Uri.encodeComponent("EcoWave Seller")}'
-        '&am=$amount&cu=INR'
-        '&tr=${Uri.encodeComponent(txnId)}'
-        '&tn=${Uri.encodeComponent("EcoWave: ${p.title} (Advance)")}'
-        '&mc=0000'; // Generic merchant code for compatibility
+        '&am=$amount'
+        '&cu=INR'
+        '&tn=${Uri.encodeComponent("EcoWave: ${p.title.substring(0, p.title.length > 20 ? 20 : p.title.length)}")}'
+        '&tr='; // Keeping parameter empty instead of removing entirely for some app parsers
   }
 
   Future<void> _initTransaction() async {

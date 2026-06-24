@@ -631,12 +631,9 @@ def api_auth_register():
 
         existing_user = users_col.find_one({"email": email})
         if existing_user:
-            # Narrowly block only if the existing account is strictly Google-only
-            if existing_user.get("provider") == "google" and not existing_user.get("password"):
-                return jsonify({
-                    "success": False,
-                    "error": "This email is already linked with Google. Please 'Continue with Google' or use password reset if you want to set a password."
-                }), 400
+            # If they have a password, they can't "re-register" but they can login.
+            # If they are Google-only, we suggest OAuth, but we don't strictly block manual creation if we wanted to allow "upgrading" to password.
+            # For now, just allow standard "Email already registered" unless it's strictly a provider mismatch.
             return jsonify({"success": False, "error": "Email already registered"}), 400
 
         now = datetime.utcnow()
@@ -693,9 +690,10 @@ def api_auth_login():
     if not user:
         return jsonify({"success": False, "error": "Invalid email or password"}), 401
     
-    # If user registered via Google, they might not have a password
-    if not user.get("password"):
-        return jsonify({"success": False, "error": "This account uses Google Sign-In. Please use Continue with Google."}), 401
+    # If user exists but has no password, they must have used OAuth.
+    # We still allow them to login if they have a password.
+    if user.get("provider") == "google" and not user.get("password"):
+        return jsonify({"success": False, "error": "This account was created with Google. Please use 'Continue with Google' or reset your password to set one."}), 401
 
     if not check_password_hash(user["password"], password):
         return jsonify({"success": False, "error": "Invalid email or password"}), 401

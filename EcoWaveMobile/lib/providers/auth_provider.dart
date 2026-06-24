@@ -29,7 +29,12 @@ class AuthProvider extends ChangeNotifier {
 
   String _handleError(dynamic e) {
     if (e is DioException) {
-      return e.error?.toString() ?? 'An unexpected network error occurred';
+      final msg = e.message ?? e.error?.toString() ?? 'An unexpected network error occurred';
+      if (e.response?.statusCode == 401) {
+        logout(); // Auto-logout on expired token
+        return 'Session expired. Please login again.';
+      }
+      return msg;
     }
     return e.toString();
   }

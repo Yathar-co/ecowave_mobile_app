@@ -53,8 +53,8 @@ class ApiService {
           userMessage = 'Server error. We are working to fix this.';
         }
 
-        // Return a new DioException with the friendly message as the error
-        return handler.next(e.copyWith(error: userMessage));
+        // Return a new DioException with the friendly message as the message
+        return handler.next(e.copyWith(message: userMessage));
       },
     ));
 

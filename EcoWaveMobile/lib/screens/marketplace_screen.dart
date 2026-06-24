@@ -883,8 +883,9 @@ class _UpiCheckoutSheetState extends State<_UpiCheckoutSheet> {
       if (mounted) setState(() => _txnId = txn['txn_id'] as String?);
     } catch (e) {
       if (mounted) {
+        final msg = e.toString().replaceAll('Exception: ', '').split('DioException').last.split(':').last.trim();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to initialize: $e'), backgroundColor: ecoError),
+          SnackBar(content: Text('⚠️ ${msg.isEmpty ? e : msg}'), backgroundColor: ecoError),
         );
       }
     }

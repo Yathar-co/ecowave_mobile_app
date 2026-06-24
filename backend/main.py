@@ -605,8 +605,32 @@ def api_auth_register():
         if password != confirm_password:
             return jsonify({"success": False, "error": "Passwords do not match"}), 400
 
-        if users_col.find_one({"email": email}):
-            return jsonify({"success": False, "error": "Email already registered"}), 400
+        existing = users_col.find_one({"email": email})
+        if existing:
+            # If account was created via Google (no password), allow setting a password
+            if not existing.get("password"):
+                hashed = generate_password_hash(password)
+                users_col.update_one(
+                    {"email": email},
+                    {"$set": {
+                        "password": hashed,
+                        "username": username,
+                        "name": username,
+                        "provider": "email+google",
+                        "updated_at": now,
+                    }}
+                )
+                existing["user_id"] = username
+                existing["username"] = username
+                existing["name"] = username
+                existing["email"] = email
+                jwt_token = create_jwt_for_user(existing)
+                return jsonify({
+                    "success": True,
+                    "token": jwt_token,
+                    "user": {"email": email, "name": username}
+                }), 201
+            return jsonify({"success": False, "error": "Email already registered. Please login instead."}), 400
 
         now = datetime.utcnow()
         user_doc = {
@@ -661,9 +685,9 @@ def api_auth_login():
     if not user:
         return jsonify({"success": False, "error": "Invalid email or password"}), 401
     
-    # If user registered via Google, they might not have a password
+    # If user registered via Google and hasn't set a password yet
     if not user.get("password"):
-        return jsonify({"success": False, "error": "This account uses Google Sign-In. Please use Continue with Google."}), 401
+        return jsonify({"success": False, "error": "No password set for this account. Please register first to create a password."}), 401
 
     if not check_password_hash(user["password"], password):
         return jsonify({"success": False, "error": "Invalid email or password"}), 401

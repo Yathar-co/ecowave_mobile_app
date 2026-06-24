@@ -14,6 +14,7 @@ class AuthProvider extends ChangeNotifier {
   final ApiService _api = ApiService();
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: ['email', 'profile'],
+    serverClientId: '328504803059-hqofqob66a16dp21rlvrg7t0mh5ekscp.apps.googleusercontent.com',
   );
 
   Future<void> init() async {

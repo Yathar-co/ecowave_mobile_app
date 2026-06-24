@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import threading
 import requests
@@ -10,9 +9,7 @@ from urllib import parse as urllib_parse
 from flask import Flask, jsonify, request, redirect, url_for, session
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room
-from werkzeug.security import generate_password_hash, check_password_hash
 from pymongo import MongoClient, ASCENDING
-from pymongo.errors import PyMongoError
 from dotenv import load_dotenv
 import jwt
 from authlib.integrations.flask_client import OAuth
@@ -23,14 +20,40 @@ import certifi
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import re
 import uuid
-try:
-    from google.oauth2 import id_token as google_id_token
-    from google.auth.transport import requests as google_auth_requests
-    GOOGLE_AUTH_AVAILABLE = True
-except ImportError:
-    GOOGLE_AUTH_AVAILABLE = False
-# No payment gateway SDK needed — using direct UPI
+import bcrypt
+
+# Simple in-memory cache for products
+products_cache = {
+    "data": None,
+    "last_updated": 0,
+    "expiry": 300 # 5 minutes
+}
+
+def get_current_user_from_token():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return None
+    try:
+        parts = auth_header.split(" ")
+        token = parts[1] if len(parts) == 2 else parts[0]
+        data = jwt.decode(token, app.secret_key, algorithms=["HS256"])
+        return users_col.find_one({"email": data.get('email')})
+    except:
+        return None
+
+def validate_email(email):
+    pattern = r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$'
+    return re.match(pattern, email) is not None
+
+def hash_password(password):
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def check_password(password, hashed):
+    if not hashed:
+        return False
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
 load_dotenv()
 
@@ -73,23 +96,11 @@ inquiries_col = db['inquiries']
 messages_col = db['messages']
 transactions_col = db['transactions']
 reports_col = db['reports']
-reviews_col = db['reviews']
-
-# ── MongoDB Indexes ─────────────────────────────────────────────────────────
-users_col.create_index([("email", ASCENDING)], unique=True, sparse=True)
-products_col.create_index([("id", ASCENDING)], unique=True)
-products_col.create_index([("seller_email", ASCENDING)])
-products_col.create_index([("status", ASCENDING)])
 products_col.create_index([("created_at", ASCENDING)])
-products_col.create_index([("title", "text"), ("description", "text"), ("category", "text")])
-transactions_col.create_index([("txn_id", ASCENDING)], unique=True)
-transactions_col.create_index([("product_id", ASCENDING)])
-transactions_col.create_index([("buyer_email", ASCENDING)])
-transactions_col.create_index([("seller_email", ASCENDING)])
 inquiries_col.create_index([("created_at", ASCENDING)])
 messages_col.create_index([("room", ASCENDING), ("created_at", ASCENDING)])
 reports_col.create_index([("target_id", ASCENDING)])
-reports_col.create_index([("report_id", ASCENDING)])
+reviews_col = db['reviews']
 reviews_col.create_index([("product_id", ASCENDING)])
 reviews_col.create_index([("seller_email", ASCENDING)])
 
@@ -114,41 +125,9 @@ MATERIAL_MULTIPLIERS = {
     "other": 1.0
 }
 
-# ── Email Validation ────────────────────────────────────────────────────────
-EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
-
-def validate_email(email):
-    """Validate email format. Returns True if valid."""
-    if not email or not isinstance(email, str):
-        return False
-    return bool(EMAIL_REGEX.match(email.strip()))
-
-# ── Lock Expiry Background Thread ───────────────────────────────────────────
-LOCK_EXPIRY_MINUTES = 15
-
-def expire_stale_locks():
-    """Release product locks older than LOCK_EXPIRY_MINUTES."""
-    while True:
-        try:
-            cutoff = datetime.utcnow() - timedelta(minutes=LOCK_EXPIRY_MINUTES)
-            result = products_col.update_many(
-                {"status": "locked", "locked_at": {"$lt": cutoff}},
-                {"$set": {"status": "active"}, "$unset": {"locked_by": "", "locked_at": ""}}
-            )
-            if result.modified_count > 0:
-                app.logger.info(f"Released {result.modified_count} stale locks")
-        except Exception as e:
-            app.logger.error(f"Lock expiry error: {e}")
-        time.sleep(60)  # Check every minute
-
-# Start lock expiry thread
-lock_thread = threading.Thread(target=expire_stale_locks, daemon=True)
-lock_thread.start()
-
 def calculate_impact(category, material=None):
     """Calculate eco impact based on category and material"""
-    cat_key = (category or "other").lower()
-    base = IMPACT_METRICS.get(cat_key, IMPACT_METRICS["other"]).copy()
+    base = IMPACT_METRICS.get(category.lower(), IMPACT_METRICS["other"]).copy()
 
     # Apply material multiplier if available
     if material:
@@ -158,6 +137,15 @@ def calculate_impact(category, material=None):
         base["waste"] *= multiplier
 
     return base
+
+def admin_required(f):
+    @wraps(f)
+    @token_required
+    def decorated(current_user, *args, **kwargs):
+        if current_user.get('email') != "admin@ecowave.com":
+            return jsonify({"success": False, "error": "Admin access required"}), 403
+        return f(current_user, *args, **kwargs)
+    return decorated
 
 def token_required(f):
     @wraps(f)
@@ -255,17 +243,23 @@ def create_jwt_for_user(user_doc: dict) -> str:
         token = token.decode("utf-8")
     return token
 
-def upsert_oauth_user(email: str, name: str = None, provider: str = "google", extra: dict = None) -> dict:
+def upsert_oauth_user(email: str, name: str = None, provider: str = "google", extra: dict = None, password: str = None) -> dict:
     query = {"email": email}
     now = datetime.utcnow()
+
+    set_fields = {
+        "username": name,
+        "email": email,
+        "name": name,
+        "provider": provider,
+        "updated_at": now
+    }
+
+    if password:
+        set_fields["password"] = hash_password(password)
+
     update = {
-        "$set": {
-            "username": name,
-            "email": email,
-            "name": name,
-            "provider": provider,
-            "updated_at": now
-        },
+        "$set": set_fields,
         "$setOnInsert": {
             "created_at": now,
             "balance": 100000.0,
@@ -279,6 +273,13 @@ def upsert_oauth_user(email: str, name: str = None, provider: str = "google", ex
             "is_banned": False,
             "report_count": 0,
             "ban_reason": None,
+            "impact_stats": {
+                "co2_saved": 0.0,
+                "water_saved": 0.0,
+                "waste_saved": 0.0,
+                "items_recycled": 0,
+                "items_purchased": 0
+            },
             "cancellation_rate": 0.0,
         }
     }
@@ -290,13 +291,14 @@ def upsert_oauth_user(email: str, name: str = None, provider: str = "google", ex
         return_document=True
     )
     if user:
-        user["user_id"] = user.get("username")
+        user["user_id"] = user.get("email") # Use email as stable user_id
         user.pop("_id", None)
     return user
 
 @app.route("/api/auth/google", methods=["GET"])
 def auth_google():
-    redirect_uri = url_for("auth_google_callback", _external=True)
+    scheme = "https" if os.getenv("FLASK_ENV") == "production" else "http"
+    redirect_uri = url_for("auth_google_callback", _external=True, _scheme=scheme)
     app.logger.info("auth_google redirect_uri: %s", redirect_uri)
     return google.authorize_redirect(redirect_uri)
 
@@ -313,16 +315,6 @@ def submit_report(current_user):
 
         if not target_id or not target_type or not reason:
             return jsonify({"success": False, "error": "Missing required fields"}), 400
-
-        # Prevent duplicate reports from the same user for the same target
-        existing_report = reports_col.find_one({
-            "reporter_email": current_user['email'],
-            "target_id": target_id,
-            "target_type": target_type,
-            "status": "pending"
-        })
-        if existing_report:
-            return jsonify({"success": False, "error": "You have already reported this. Our team is reviewing it."}), 400
 
         # Enforce: Only buyers can report sellers or products
         if target_type in ['user', 'product']:
@@ -361,11 +353,9 @@ def submit_report(current_user):
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/admin/reports", methods=["GET"])
-@token_required
+@admin_required
 def get_all_reports(current_user):
     """Admin: Get all pending reports"""
-    if current_user['email'] != "admin@ecowave.com":
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
     try:
         reports = list(reports_col.find({"status": "pending"}, {"_id": 0}).sort("created_at", -1))
         return jsonify({"success": True, "reports": reports}), 200
@@ -373,11 +363,9 @@ def get_all_reports(current_user):
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/admin/dismiss-report/<report_id>", methods=["POST"])
-@token_required
+@admin_required
 def dismiss_report(current_user, report_id):
     """Admin: Dismiss a report"""
-    if current_user['email'] != "admin@ecowave.com":
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
     try:
         reports_col.update_one({"report_id": report_id}, {"$set": {"status": "dismissed"}})
         return jsonify({"success": True, "message": "Report dismissed"}), 200
@@ -385,11 +373,9 @@ def dismiss_report(current_user, report_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/admin/validate-report/<report_id>", methods=["POST"])
-@token_required
+@admin_required
 def validate_report(current_user, report_id):
     """Admin validates a report and applies punishment if necessary"""
-    if current_user['email'] != "admin@ecowave.com":
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
     try:
         report = reports_col.find_one({"report_id": report_id})
         if not report:
@@ -442,11 +428,8 @@ def get_user_profile(email):
 # --- Admin Extension Endpoints ---
 
 @app.route("/api/admin/products", methods=["GET"])
-@token_required
+@admin_required
 def admin_get_products(current_user):
-    if current_user['email'] != "admin@ecowave.com":
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
-
     products = list(products_col.find({}, {"_id": 0}))
     # Add sales info for each product
     for p in products:
@@ -455,11 +438,8 @@ def admin_get_products(current_user):
     return jsonify({"success": True, "products": products}), 200
 
 @app.route("/api/admin/products/<product_id>/status", methods=["POST"])
-@token_required
+@admin_required
 def admin_update_product_status(current_user, product_id):
-    if current_user['email'] != "admin@ecowave.com":
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
-
     data = request.get_json()
     new_status = data.get("status") # 'active', 'banned', 'under_review'
 
@@ -467,11 +447,8 @@ def admin_update_product_status(current_user, product_id):
     return jsonify({"success": True, "message": f"Product status updated to {new_status}"}), 200
 
 @app.route("/api/admin/users", methods=["GET"])
-@token_required
+@admin_required
 def admin_get_users(current_user):
-    if current_user['email'] != "admin@ecowave.com":
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
-
     all_users = list(users_col.find({}, {"_id": 0}))
 
     # Ensure all users have required fields and are JSON serializable
@@ -493,11 +470,8 @@ def admin_get_users(current_user):
     return jsonify({"success": True, "users": cleaned_users}), 200
 
 @app.route("/api/admin/users/<email>/ban", methods=["POST"])
-@token_required
+@admin_required
 def admin_ban_user(current_user, email):
-    if current_user['email'] != "admin@ecowave.com":
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
-
     data = request.get_json()
     is_banned = data.get("is_banned", True)
     reason = data.get("reason", "Violated terms")
@@ -509,11 +483,8 @@ def admin_ban_user(current_user, email):
     return jsonify({"success": True, "message": f"User {'banned' if is_banned else 'unbanned'}"}), 200
 
 @app.route("/api/admin/users/<email>/verify", methods=["POST"])
-@token_required
+@admin_required
 def admin_verify_user(current_user, email):
-    if current_user['email'] != "admin@ecowave.com":
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
-
     data = request.get_json()
     is_verified = data.get("is_verified", True)
 
@@ -533,150 +504,98 @@ def auth_google_callback():
     redirect_url = FRONTEND_ORIGIN.rstrip("/") + "/auth-callback?token=" + urllib_parse.quote(jwt_token)
     return redirect(redirect_url)
 
-@app.route("/api/auth/google", methods=["POST"])
-def api_auth_google():
-    """API login for mobile clients via Google ID token verification"""
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    """Secure API login for mobile clients to get a JWT token"""
     data = request.get_json()
-    if not data:
-        return jsonify({"success": False, "error": "Request body is required"}), 400
+    if not data or not data.get("email") or not data.get("password"):
+        return jsonify({"success": False, "error": "Email and password are required"}), 400
+    
+    email = data["email"]
+    password = data["password"]
 
-    id_token_str = data.get("id_token")
-    google_client_id = os.getenv("GOOGLE_CLIENT_ID")
+    user = users_col.find_one({"email": email})
+    
+    if not user:
+        return jsonify({"success": False, "error": "Invalid email or password"}), 401
 
-    # If ID token is provided, verify it server-side
-    if id_token_str and GOOGLE_AUTH_AVAILABLE and google_client_id:
-        try:
-            idinfo = google_id_token.verify_oauth2_token(
-                id_token_str,
-                google_auth_requests.Request(),
-                google_client_id
-            )
-            email = idinfo.get("email")
-            name = idinfo.get("name") or idinfo.get("given_name") or (email.split("@")[0] if email else None)
-            if not email:
-                return jsonify({"success": False, "error": "No email in Google token"}), 400
-            if not idinfo.get("email_verified"):
-                return jsonify({"success": False, "error": "Google email not verified"}), 400
-        except ValueError as e:
-            app.logger.warning(f"Google ID token verification failed: {e}")
-            return jsonify({"success": False, "error": "Invalid Google token"}), 401
-    else:
-        # Fallback: accept email+name directly (for dev or when google-auth not installed)
-        email = data.get("email")
-        name = data.get("name", email.split("@")[0] if email else "")
-        if not email:
-            return jsonify({"success": False, "error": "Email or id_token is required"}), 400
-        if not GOOGLE_AUTH_AVAILABLE:
-            app.logger.warning("google-auth not installed; accepting unverified Google login")
+    if not user.get("password"):
+        return jsonify({"success": False, "error": "This account uses Google Sign-In. Please use the Google login option or set a password by registering."}), 401
 
-    # Securely upsert user (create if not exists)
-    user = upsert_oauth_user(email=email, name=name, provider="google")
+    if not check_password(password, user.get("password")):
+        return jsonify({"success": False, "error": "Invalid email or password"}), 401
+
+    if user.get("is_banned"):
+        return jsonify({"success": False, "error": f"Account suspended: {user.get('ban_reason')}"}), 403
 
     jwt_token = create_jwt_for_user(user)
-
+    
     return jsonify({
         "success": True,
         "token": jwt_token,
         "user": {
             "email": user["email"],
-            "name": user.get("name", user.get("username", ""))
+            "name": user.get("name", "User")
         }
     }), 200
 
 @app.route("/api/auth/register", methods=["POST"])
 def api_auth_register():
-    """Email/Password registration"""
-    try:
-        data = request.get_json()
-        email = (data.get("email") or "").strip().lower()
-        username = data.get("username")
-        password = data.get("password")
-        confirm_password = data.get("confirm_password")
-
-        if not all([email, username, password, confirm_password]):
-            return jsonify({"success": False, "error": "Missing fields"}), 400
-
-        if not validate_email(email):
-            return jsonify({"success": False, "error": "Invalid email format"}), 400
-
-        if len(password) < 6:
-            return jsonify({"success": False, "error": "Password must be at least 6 characters"}), 400
-
-        if password != confirm_password:
-            return jsonify({"success": False, "error": "Passwords do not match"}), 400
-
-        if users_col.find_one({"email": email}):
-            return jsonify({"success": False, "error": "Email already registered"}), 400
-
-        now = datetime.utcnow()
-        user_doc = {
-            "email": email,
-            "username": username,
-            "name": username,
-            "password": generate_password_hash(password),
-            "provider": "email",
-            "created_at": now,
-            "updated_at": now,
-            "balance": 100000.0,
-            "phone": "",
-            "is_verified": email == "admin@ecowave.com",
-            "is_trusted_seller": email == "admin@ecowave.com",
-            "rating": 5.0,
-            "sales_count": 0,
-            "is_banned": False,
-            "report_count": 0,
-            "ban_reason": None,
-            "cancellation_rate": 0.0,
-        }
-
-        users_col.insert_one(user_doc)
-        user_doc["user_id"] = username
-        jwt_token = create_jwt_for_user(user_doc)
-
-        return jsonify({
-            "success": True,
-            "token": jwt_token,
-            "user": {
-                "email": email,
-                "name": username
-            }
-        }), 201
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/api/auth/login", methods=["POST"])
-def api_auth_login():
-    """Email/Password login"""
+    """Mobile registration endpoint with password hashing"""
     data = request.get_json()
-    email = (data.get("email") or "").strip().lower()
+    email = data.get("email")
+    username = data.get("username")
     password = data.get("password")
 
-    if not email or not password:
-        return jsonify({"success": False, "error": "Email and password are required"}), 400
+    if not email or not username or not password:
+        return jsonify({"success": False, "error": "Email, username, and password are required"}), 400
+
+    if len(password) < 6:
+        return jsonify({"success": False, "error": "Password must be at least 6 characters long"}), 400
 
     if not validate_email(email):
         return jsonify({"success": False, "error": "Invalid email format"}), 400
-    
-    user = users_col.find_one({"email": email})
-    if not user:
-        return jsonify({"success": False, "error": "Invalid email or password"}), 401
-    
-    # If user registered via Google, they might not have a password
-    if not user.get("password"):
-        return jsonify({"success": False, "error": "This account uses Google Sign-In. Please use Continue with Google."}), 401
 
-    if not check_password_hash(user["password"], password):
-        return jsonify({"success": False, "error": "Invalid email or password"}), 401
-
-    user["user_id"] = user.get("username", user.get("name", email.split("@")[0]))
+    # Check if user already exists
+    existing_user = users_col.find_one({"email": email})
+    if existing_user:
+        if existing_user.get("password"):
+            return jsonify({"success": False, "error": "Email already registered"}), 400
+        else:
+            # User exists (likely via Google) but has no password. Allow setting one.
+            user = upsert_oauth_user(email=email, name=username, provider=existing_user.get("provider", "google"), password=password)
+    else:
+        user = upsert_oauth_user(email=email, name=username, provider="mobile_app", password=password)
     jwt_token = create_jwt_for_user(user)
-    
+
     return jsonify({
         "success": True,
         "token": jwt_token,
         "user": {
             "email": user["email"],
-            "name": user.get("name", user.get("username", ""))
+            "name": user.get("name", username)
+        }
+    }), 200
+
+@app.route("/api/auth/google", methods=["POST"])
+def api_auth_google_mobile():
+    """Mobile-specific Google login (exchange email/name for JWT)"""
+    data = request.get_json()
+    email = data.get("email")
+    name = data.get("name")
+
+    if not email:
+        return jsonify({"success": False, "error": "Email required"}), 400
+
+    user = upsert_oauth_user(email=email, name=name, provider="google")
+    jwt_token = create_jwt_for_user(user)
+
+    return jsonify({
+        "success": True,
+        "token": jwt_token,
+        "user": {
+            "email": user["email"],
+            "name": user.get("name", "Google User")
         }
     }), 200
 
@@ -781,29 +700,42 @@ def send_chat_notification_email(recipient_email, sender_name, message_text, pro
 def get_products():
     """Fetch all products from the database with optional filtering"""
     try:
-        # Only show active products in the marketplace
-        query = {"status": "active"}
+        category = request.args.get("category", "all")
+        search = request.args.get("search", "")
         
-        # Filter by Category
-        category = request.args.get("category")
-        if category and category != "all":
-            query["category"] = category
+        # Check cache for default view (no search, category 'all')
+        current_user = get_current_user_from_token()
+        user_email = current_user['email'] if current_user else None
 
-        # Exclude seller's own products from marketplace
-        exclude_seller = request.args.get("exclude_seller")
-        if exclude_seller:
-            query["seller_email"] = {"$ne": exclude_seller}
+        # We can't easily cache if we filter by user, but let's cache the base list
+        if not search and category == "all" and products_cache["data"] and (time.time() - products_cache["last_updated"] < products_cache["expiry"]):
+            products = products_cache["data"]
+        else:
+            query = {"status": "active"}
             
-        # Filter by Search Text (title, description, AND category)
-        search = request.args.get("search")
-        if search:
-            query["$or"] = [
-                {"title": {"$regex": search, "$options": "i"}},
-                {"description": {"$regex": search, "$options": "i"}},
-                {"category": {"$regex": search, "$options": "i"}}
-            ]
+            # Filter by Category
+            if category and category != "all":
+                query["category"] = category
 
-        products = list(products_col.find(query, {"_id": 0}).sort("created_at", -1))
+            # Filter by Search Text
+            if search:
+                query["$or"] = [
+                    {"title": {"$regex": re.escape(search), "$options": "i"}},
+                    {"description": {"$regex": re.escape(search), "$options": "i"}},
+                    {"category": {"$regex": re.escape(search), "$options": "i"}}
+                ]
+
+            products = list(products_col.find(query, {"_id": 0}).sort("created_at", -1))
+
+            # Update cache if it's the base list
+            if not search and category == "all":
+                products_cache["data"] = products
+                products_cache["last_updated"] = time.time()
+
+        # Filter out current user's own products
+        if user_email:
+            products = [p for p in products if p.get("seller_email") != user_email]
+
         return jsonify({"success": True, "products": products}), 200
     except Exception as e:
         app.logger.error(f"Error fetching products: {e}")
@@ -879,7 +811,10 @@ def create_product(current_user):
         
         products_col.insert_one(product)
         product.pop("_id", None)
-        
+
+        # Invalidate cache
+        products_cache["data"] = None
+
         return jsonify({"success": True, "product": product}), 201
     except Exception as e:
         app.logger.error(f"Error creating product: {e}")
@@ -1048,9 +983,8 @@ def get_products_by_seller(email):
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/products/<product_id>", methods=["PUT"])
-@token_required
-def update_product(current_user, product_id):
-    """Update an existing product (only by the owner or admin)"""
+def update_product(product_id):
+    """Update an existing product"""
     try:
         data = request.get_json()
         
@@ -1058,12 +992,8 @@ def update_product(current_user, product_id):
         existing_product = products_col.find_one({"id": product_id}, {"_id": 0})
         if not existing_product:
             return jsonify({"success": False, "error": "Product not found"}), 404
-
-        # Verify ownership
-        if existing_product.get("seller_email") != current_user["email"] and current_user.get("email") != "admin@ecowave.com":
-            return jsonify({"success": False, "error": "Unauthorized to update this listing"}), 403
         
-        # Prepare update data (do NOT allow changing seller_email)
+        # Prepare update data
         update_data = {
             "title": data.get("title", existing_product["title"]),
             "description": data.get("description", existing_product["description"]),
@@ -1071,6 +1001,7 @@ def update_product(current_user, product_id):
             "badge": data.get("badge", existing_product["badge"]),
             "image": data.get("image", existing_product["image"]),
             "category": data.get("category", existing_product.get("category")),
+            "seller_email": data.get("seller_email", existing_product.get("seller_email", "")),
             "seller_location": data.get("seller_location", existing_product.get("seller_location", "")),
             "seller_phone": data.get("seller_phone", existing_product.get("seller_phone", "")),
             "updated_at": datetime.utcnow()
@@ -1104,6 +1035,9 @@ def delete_product(current_user, product_id):
         # Delete product
         products_col.delete_one({"id": product_id})
         
+        # Invalidate cache
+        products_cache["data"] = None
+
         return jsonify({"success": True, "message": "Product deleted successfully"}), 200
     except Exception as e:
         app.logger.error(f"Error deleting product {product_id}: {e}")
@@ -1130,38 +1064,28 @@ def get_user_impact(current_user):
 @app.route("/api/payments/create-transaction", methods=["POST"])
 @token_required
 def create_transaction(current_user):
-    """Record a new UPI transaction when buyer initiates payment.
-    Uses atomic find_one_and_update to prevent race conditions."""
+    """Record a new UPI transaction when buyer initiates payment"""
     try:
         data = request.get_json()
         product_id = data.get("product_id", "")
 
-        # Atomic lock: only lock if product is currently 'active'
-        # This prevents two buyers from purchasing the same item simultaneously
-        now = datetime.utcnow()
+        # Atomic check and lock: product must be 'active'
         product = products_col.find_one_and_update(
             {"id": product_id, "status": "active"},
-            {"$set": {
-                "status": "locked",
-                "locked_by": current_user['email'],
-                "locked_at": now
-            }},
-            return_document=False  # Return the original (pre-update) document
+            {"$set": {"status": "pending_purchase"}}, # Temporary lock
+            return_document=False
         )
 
         if not product:
-            # Check if it exists at all to give a better error message
+            # Check if it was already sold or reserved
             existing = products_col.find_one({"id": product_id})
             if not existing:
                 return jsonify({"success": False, "error": "Product not found"}), 404
-            if existing.get("status") in ("locked", "reserved", "sold"):
-                return jsonify({"success": False, "error": "This item is no longer available. Another buyer may have claimed it."}), 409
-            return jsonify({"success": False, "error": "This item is not available for purchase"}), 400
+            return jsonify({"success": False, "error": "This item is already sold or being purchased by someone else"}), 400
 
-        # Prevent seller from buying their own product
         if product.get("seller_email") == current_user['email']:
-            # Undo the lock
-            products_col.update_one({"id": product_id}, {"$set": {"status": "active"}, "$unset": {"locked_by": "", "locked_at": ""}})
+            # Revert status
+            products_col.update_one({"id": product_id, "status": "pending_purchase"}, {"$set": {"status": "active"}})
             return jsonify({"success": False, "error": "You cannot purchase your own listing"}), 400
 
         txn_id = f"txn_{str(uuid.uuid4())[:12]}"
@@ -1169,15 +1093,12 @@ def create_transaction(current_user):
         # Security: Use the price from the product record
         actual_price = float(product.get("price", 0))
 
-        # Shipping Charge Logic: 3% of item price
-        # 1% goes to seller for shipping aid, 2% to NGO for carbon offset
+        # New Shipping Charge Logic: 3% of item price
         shipping_charge = round(actual_price * 0.03, 2)
         seller_shipping_aid = round(actual_price * 0.01, 2)
         ngo_contribution = round(actual_price * 0.02, 2)
 
         total_with_shipping = actual_price + shipping_charge
-
-        # Calculate staged amounts based on total including shipping
         advance_amount = round(total_with_shipping * 0.30, 2)
 
         transaction = {
@@ -1192,33 +1113,35 @@ def create_transaction(current_user):
             "ngo_contribution": ngo_contribution,
             "total_amount": total_with_shipping,
             "paid_amount": 0,
-            "current_stage": "advance", # advance (30%), shipping (20%), final (50%)
+            "current_stage": "advance",
             "stage_amount": advance_amount,
             "status": "initiated",
-            "created_at": now,
+            "created_at": datetime.utcnow(),
             "product_snapshot": {
                 "title": product.get("title"),
                 "price": product.get("price"),
                 "seller_email": product.get("seller_email"),
                 "category": product.get("category"),
-                "image": product.get("image")
+                "image": product.get("image"),
+                "eco_impact": product.get("eco_impact")
             }
         }
         
         transactions_col.insert_one(transaction)
-        transaction.pop("_id", None)
+
+        # Confirm the lock by moving to 'reserved' (until payment is confirmed or timeout)
+        products_col.update_one({"id": product_id}, {"$set": {"status": "reserved", "buyer_email": current_user['email'], "txn_id": txn_id}})
         
+        # Invalidate cache
+        products_cache["data"] = None
+
+        transaction.pop("_id", None)
         return jsonify({"success": True, "transaction": transaction}), 201
     except Exception as e:
-        # On any error, release the lock if we acquired it
-        try:
-            products_col.update_one(
-                {"id": product_id, "locked_by": current_user['email']},
-                {"$set": {"status": "active"}, "$unset": {"locked_by": "", "locked_at": ""}}
-            )
-        except Exception:
-            pass
         app.logger.error(f"Error creating transaction: {e}")
+        # Try to revert status if possible
+        if 'product_id' in locals():
+            products_col.update_one({"id": product_id, "status": "pending_purchase"}, {"$set": {"status": "active"}})
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/payments/confirm", methods=["POST"])
@@ -1256,10 +1179,6 @@ def confirm_payment(current_user):
             next_stage = "final"
             next_amount = round(txn["total_amount"] * 0.50, 2)
             status = "awaiting_delivery"
-        elif current_stage == "final":
-            next_stage = "received_confirmation_pending"
-            next_amount = 0
-            status = "final_paid"
         else:
             next_stage = "completed"
             next_amount = 0
@@ -1337,9 +1256,6 @@ def confirm_delivery(current_user):
         if not txn:
             return jsonify({"success": False, "error": "Transaction not found"}), 404
 
-        if txn.get("current_stage") != "received_confirmation_pending":
-            return jsonify({"success": False, "error": "All payment stages must be completed before confirming delivery."}), 400
-
         # Update transaction to completed
         transactions_col.update_one(
             {"txn_id": txn_id},
@@ -1357,21 +1273,37 @@ def confirm_delivery(current_user):
             {"$set": {"status": "sold"}}
         )
 
+        # Invalidate cache
+        products_cache["data"] = None
+
         # Credit Eco Impact
-        product = products_col.find_one({"id": product_id})
-        impact = product.get("eco_impact", {})
+        impact = txn.get("product_snapshot", {}).get("eco_impact", {})
+
+        # Update buyer stats
+        users_col.update_one(
+            {"email": current_user['email']},
+            {
+                "$inc": {
+                    "impact_stats.co2_saved": impact.get("co2", 0),
+                    "impact_stats.water_saved": impact.get("water", 0),
+                    "impact_stats.waste_saved": impact.get("waste", 0),
+                    "impact_stats.items_purchased": 1
+                }
+            }
+        )
 
         # Update seller stats
-        seller_email = product.get("seller_email")
+        seller_email = txn.get("seller_email")
         if seller_email:
             users_col.update_one(
                 {"email": seller_email},
                 {
                     "$inc": {
-                        "stats.items_sold": 1,
-                        "stats.co2_saved": impact.get("co2", 0),
-                        "stats.water_saved": impact.get("water", 0),
-                        "stats.waste_saved": impact.get("waste", 0)
+                        "sales_count": 1,
+                        "impact_stats.co2_saved": impact.get("co2", 0),
+                        "impact_stats.water_saved": impact.get("water", 0),
+                        "impact_stats.waste_saved": impact.get("waste", 0),
+                        "impact_stats.items_recycled": 1
                     }
                 }
             )
@@ -1457,13 +1389,11 @@ def handle_message(data):
     room = data['room']
     sender_email = data['sender']
     text = data['text']
-    msg_id = data.get('msg_id', str(uuid.uuid4()))  # Client-generated or fallback
 
     msg = {
         "room": room,
         "sender": sender_email,
         "text": text,
-        "msg_id": msg_id,
         "created_at": datetime.utcnow().isoformat()
     }
     messages_col.insert_one(msg.copy())
@@ -1544,4 +1474,5 @@ def mark_as_shipped(current_user):
 
 if __name__ == "__main__":
     # Python 3.13 + eventlet is unstable. Using standard Flask runner.
-    app.run(host="0.0.0.0", port=PORT, debug=True)
+    # But socketio.run is preferred for WebSocket support.
+    socketio.run(app, host="0.0.0.0", port=PORT, debug=True)
